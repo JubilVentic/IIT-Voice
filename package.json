@@ -1,0 +1,27 @@
+{
+  "name": "iit-voice",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "MSU-IIT campus reporting pilot",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "prestart": "npm run build",
+    "start": "python3 -B server.py",
+    "pretest": "npm run build",
+    "test": "node --test tests/*.test.js && python3 -B -m unittest discover -s tests -v",
+    "pretest:browser": "npm run build",
+    "test:browser": "node tests/browser-smoke.cjs",
+    "check": "npm run build"
+  },
+  "devDependencies": {
+    "playwright": "1.62.1",
+    "vite": "^8.3.4"
+  },
+  "dependencies": {
+    "leaflet": "^1.9.4",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0"
+  }
+}
