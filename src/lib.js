@@ -9,6 +9,10 @@ export const priorities = {
   high: { label: 'High', rank: 1, guidance: 'Address soon; significant disruption or risk.' },
   urgent: { label: 'Urgent', rank: 0, guidance: 'Immediate attention; serious risk or critical disruption.' },
 };
+export const reportCategories = report => report.categories?.length ? report.categories : [report.category];
+export const matchesCategory = (report, category) => !category || reportCategories(report).includes(category);
+export const matchesArea = (report, area, groups) => !area || groups.find(group => group.name === area)?.categories.some(category => matchesCategory(report, category));
+export const newestFirst = (a, b) => new Date(b.created_at) - new Date(a.created_at) || b.id - a.id;
 export const priorityOrder = (a, b) => priorities[a.priority].rank - priorities[b.priority].rank || new Date(a.created_at) - new Date(b.created_at);
 export const statusLabels = { submitted: 'Under review', needs_information: 'Needs information', validated: 'Validated', in_progress: 'In progress', resolved: 'Resolved', closed: 'Closed', rejected: 'Rejected', duplicate: 'Duplicate' };
 export const transitions = { submitted: ['validated', 'needs_information', 'rejected', 'duplicate'], needs_information: ['validated', 'rejected', 'duplicate'], validated: ['in_progress', 'resolved'], in_progress: ['resolved'], resolved: ['closed', 'in_progress'], closed: ['in_progress'], rejected: [], duplicate: [] };
@@ -27,15 +31,19 @@ export function useAction() {
   return { busy, error, run };
 }
 
-export async function uploadEvidence(api, id, file) {
+export function readImage(file) {
   validateImage(file);
-  const data = await new Promise((resolve, reject) => {
+  return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(reader.result.split(',')[1]);
     reader.onerror = () => reject(new Error('Unable to read image.'));
     reader.readAsDataURL(file);
   });
-  await api(`/api/reports/${id}/attachments`, { method: 'POST', body: { data } });
+}
+
+export async function uploadEvidence(api, id, file, analysisToken = '') {
+  const data = await readImage(file);
+  await api(`/api/reports/${id}/attachments`, { method: 'POST', body: { data, filename: file.name, analysis_token: analysisToken } });
 }
 
 export function validateImage(file) {

@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { date, priorities, statusLabels, useVoice } from '../lib.js';
+import { date, reportCategories, priorities, statusLabels, useVoice } from '../lib.js';
 
 const shapes = {
   grid: <><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></>,
@@ -28,10 +28,10 @@ export function Hero({ title, question, sub, action }) {
 export const Stats = ({ values }) => <div className="stats">{values.map(([label, value, sub]) => <div className="stat" key={label}><span className="label">{label}</span><strong>{value}</strong><small>{sub}</small></div>)}</div>;
 export function ReportList({ reports }) {
   const { openReport } = useVoice();
-  return reports.length ? reports.map(r => <div className="list-row" key={r.id}><div className="rowtop"><h3>{r.title}</h3><div className="badges"><Badge value={r.status}/><Badge value={r.priority}/></div></div><div className="meta">IV-{String(r.id).padStart(4, '0')} · {r.location}<br/>{r.category} · {date(r.updated_at)}</div><button type="button" className="btn link" data-report={r.id} onClick={() => openReport(r.id)}>View concern →</button></div>) : <div className="empty">No concerns here yet.</div>;
+  return reports.length ? reports.map(r => <div className="list-row" key={r.id}><div className="rowtop"><h3>{r.title}</h3><div className="badges"><Badge value={r.status}/><Badge value={r.priority}/></div></div><div className="meta">IV-{String(r.id).padStart(4, '0')} · {r.location}<br/>{reportCategories(r).join(" · ")}<br/>Submitted {date(r.created_at)}</div><button type="button" className="btn link" data-report={r.id} onClick={() => openReport(r.id)}>View concern →</button></div>) : <div className="empty">No concerns here yet.</div>;
 }
 export function Dialog({ children, onClose }) {
   const ref = useRef(null);
   useEffect(() => { ref.current.showModal(); }, []);
-  return <dialog ref={ref} id="modal" aria-labelledby="modal-title" onCancel={e => { e.preventDefault(); onClose(); }}><button type="button" className="dialog-close" aria-label="Close dialog" onClick={onClose}>×</button><div id="modal-content">{children}</div></dialog>;
+  return <dialog ref={ref} id="modal" aria-labelledby="modal-title" onCancel={e => { if (e.target !== e.currentTarget) return; e.preventDefault(); onClose(); }}><button type="button" className="dialog-close" aria-label="Close dialog" onClick={onClose}>×</button><div id="modal-content">{children}</div></dialog>;
 }

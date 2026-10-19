@@ -2,12 +2,13 @@
 
 A working campus-reporting pilot for MSU–IIT, with a React interface built by Vite, a Python JSON API, and persistent SQLite storage. The maroon, gold, and white design, Google campus embed, and interactive report pins are preserved. React renders all screens and manages UI state; Python handles authentication, permissions, report workflows, and persistence.
 
-Requirements: Node.js 22.12+ or 24+, npm, and Python 3.9+. The Python backend uses the standard library only. Frontend dependencies are locked in `package-lock.json`.
+Requirements: Node.js 22.12+ or 24+, npm, and Python 3.9+. The Python backend uses the standard library plus Pillow for photo processing and python-dotenv for local configuration. Frontend dependencies are locked in `package-lock.json`.
 
 ## Run locally
 
 ```sh
 npm ci
+python3 -m pip install -r requirements.txt
 python3 -B server.py --seed-demo
 npm start
 ```
@@ -36,17 +37,13 @@ The command prompts for name and password. Requests to register through the appl
 
 ## React development
 
-Run the API in one terminal:
-
-```sh
-python3 -B server.py
-```
-
-Run the React development server in another:
+Start both the Python API and React development server with one command:
 
 ```sh
 npm run dev
 ```
+
+Vite starts Python automatically and waits for it to be ready before serving the frontend. An already-running IIT Voice API is reused. Stopping Vite also stops the API process it started; separately started backends remain running. Python dependencies from `requirements.txt` must already be installed. If needed, set `IIT_VOICE_PYTHON` to your virtual environment's Python executable. `IIT_VOICE_API_PORT` changes both the auto-started backend port and proxy target (default 8000).
 
 Open **http://127.0.0.1:5173**. Vite proxies `/api` requests to Python on port 8000, keeping cookie-based login and CSRF checks working. JSX and CSS edits update during development. For the combined application at port 8000, run `npm run build` after frontend edits; no Python restart is required for new build assets. Backend changes require a server restart.
 
@@ -54,7 +51,7 @@ Open **http://127.0.0.1:5173**. Vite proxies `/api` requests to Python on port 8
 
 - Cookie-based login, logout, password hashing, login throttling, and CSRF checks.
 - Separate student/campus-member, Validator Admin, and Main Admin interfaces, with server-enforced permissions. Faculty and staff are campus members unless explicitly granted an admin role.
-- Report submission with category, suggested priority, written location, optional geographic pin, and optional PNG/JPEG evidence.
+- Report submission with one primary category and additional applicable categories, admin-assessed priority, written location, optional geographic pin, and optional PNG/JPEG evidence.
 - A real interactive Leaflet/OpenStreetMap map. Leaflet is bundled with the React app; map tiles still need internet access. The approximate center and example pins need local verification. No authoritative campus geofence is configured.
 - The provided Google Maps iframe as the default campus view, with a separate **Report pins** view for IIT Voice concerns. The iframe shows the campus place and supports Google's normal map interaction; report pins and location selection use Leaflet. Google Maps JavaScript API integration would be needed to place application-controlled report markers directly on a Google map.
 - Review queue, search, category/status filters, request for information, rejection, duplicate linking, validation, and office routing.
@@ -138,4 +135,66 @@ Report forms include separate optional location details (up to 500 characters), 
 
 Current-location lookup first requests standard accuracy with a cached position up to one minute old (12-second timeout), then retries precise positioning for 20 seconds on timeout/unavailable errors. Permission denial is not retried. Clicking or dragging a pin cancels pending results so a delayed device location cannot overwrite manual selection. If the browser cannot obtain a position, use a manual pin or open the app in a browser with Location Services enabled.
 
-Admin priority assessment uses four labeled colors: Low (green), Normal (blue), High (gold), and Urgent (red). Initial validator reviews can assign urgency with a recorded decision note. Review queues sort by urgency, then oldest submission; report lists include a priority filter. Priority changes are recorded in activity/audit records and notify the reporter. Main Admin manages priority after validation.
+Admin priority assessment uses four labeled colors: Low (green), Normal (blue), High (gold), and Urgent (red). Initial validator reviews can assign urgency with a recorded decision note. Report lists and review queues default to newest submissions first; their sort control also offers oldest-first and urgent-first (oldest within each priority). Area, category, status and priority filters combine. Priority changes are recorded in activity/audit records and notify the reporter. Main Admin manages priority after validation.
+
+## Photo geotags and Gemini category suggestions
+
+Uploading a photo in a new report checks its EXIF GPS on the server. **Use photo geotag** fills the report pin and campus location; verify the capture location before using it. If GPS metadata is missing or invalid (common with screenshots and shared images), the app does not invent a geotag. Select a pin manually or use current location.
+
+Selecting a photo automatically sends a resized, metadata-free copy to Gemini for content screening and fills the Title and Categories fields with suggestions when a concern is visible. **Check photo again** retries the analysis. The reporter can override it. Unclear or unrelated photos return no category; reports still require admin validation, and AI never sets priority or approves reports. Original evidence remains restricted to the reporter and admins.
+
+Put `GEMINI_API_KEY=your-api-key` in `.env.local` at the project root (see `.env.example`), then restart the server. Python loads this file automatically; existing shell environment variables take precedence. `.env.local` is ignored by Git, and the key must not use a `VITE_` prefix. You can also configure the key directly in the server environment:
+
+```sh
+export GEMINI_API_KEY="your-api-key"
+# Optional override for a Gemini image-capable model:
+export IIT_VOICE_AI_MODEL="gemini-3.5-flash-lite"
+npm start
+```
+
+Get a key in [Google AI Studio](https://aistudio.google.com/apikey). Check your Gemini project quota and billing before enabling analysis. Requests are limited to 20 analysis attempts per signed-in account per hour. The default model is [Gemini 3.5 Flash-Lite](https://ai.google.dev/gemini-api/docs/models/gemini-3.5-flash-lite); the integration uses [GenerateContent](https://ai.google.dev/api/generate-content) with image input and a category JSON schema. Without a configured key, photo GPS still works, and evidence is marked **Unverified** for manual review.
+
+Tests use generated images and mocked AI responses; a real Gemini response requires your server API key. Photos must be PNG/JPEG under 2 MB and 20 megapixels for analysis.
+
+AI photo analysis now also suggests an editable report title. Filename, AI title/category/explanation, model and analysis time, EXIF GPS, and the report pin at upload are saved with each attachment and shown only to the reporter and admins. AI results are bound to the signed-in user and exact image bytes by a server-issued token, so changing a photo cannot reuse another photo’s analysis. Unsaved analysis tokens expire after 24 hours; submitted attachment metadata remains with the report. Metadata is saved alongside the original image; the image pixels are not altered or stamped.
+
+Canceling a file picker does not close the report dialog. Escape while the report itself is focused, the close button, and Cancel still close the report normally. Submission is disabled while photo inspection/analysis is in progress.
+
+## Automatic photo screening
+
+Every evidence upload is screened on the server, including uploads made without the browser assistance or without an analysis token. Results are cached for 24 hours per user and exact image bytes; the client cannot forge a clearance. Gemini receives a metadata-free copy automatically when a photo is selected. Its sexually explicit content filter uses `BLOCK_MEDIUM_AND_ABOVE`, and provider safety blocks are treated as rejected attachments.
+
+- **Photo blocked:** explicit sexual content or a provider safety block prevents saving the image. Remove/replace the image to continue; a report can still be submitted without a photo. Rejected image bytes are not saved in the database.
+- **Needs manual review:** unclear or unrelated evidence, possible memes or manipulation is flagged with a short reason. The report can proceed, but the attachment thumbnail stays hidden until the reporter or an admin deliberately opens it.
+- **No content concern flagged:** plausible campus evidence can be previewed normally. This does not verify the location, authenticity, or truth of the report.
+- **Unverified:** missing configuration, quota/rate limits, connection failures or invalid AI output cannot count as clearance. The attachment can be submitted for manual review with its thumbnail hidden. Existing attachments without a screening result receive the same treatment.
+
+Validators see the screening result/reason beside the filename, suggested title/category and location metadata. Photos and analysis remain private to the reporter and admins. AI can make mistakes and cannot reliably prove a photo is original, an event occurred, or that a student intended a prank. Admins still validate reports; screening does not suspend accounts or trigger disciplinary actions. Tests use harmless generated images and mocked safety verdicts, never explicit image fixtures.
+
+## Categories and overlapping concerns
+
+The scope diagram supplies nine categories in three areas:
+
+| Area | Categories |
+| --- | --- |
+| Physical & Environment | Facilities, Infrastructure & Maintenance; Safety, Security & Risk; Environmental, Aesthetics & Landscaping |
+| Digital & Academic | ICT, Internet & Digital Services; Student Needs & Learning Environment; Academic, Research & Innovation Enterprises |
+| Operations & Governance | Administrative, HR & Workplace; Procurement, Property & Finance; Public Information, Policy & Legal |
+
+Choose one **Primary category** and expand **Additional categories** to select all that apply. A damaged walkway light can belong to both facilities maintenance and safety. A report spanning different areas appears once under each matching area/category filter, retains one ID, and follows one review and resolution workflow. Totals count unique reports; category chart counts can overlap.
+
+The primary category suggests a lead office; admins still confirm the responsible office. Office defaults are proposed configuration, not an authoritative university directory. Validators can correct categories during initial review; Main Admin can also change them afterward. Changes require a decision note and are recorded in activity and the audit log. Gemini suggestions now include multiple applicable categories, with the same screening and human-validation safeguards.
+
+Startup migrates existing Safety / Repair & maintenance / Student needs reports to the corresponding new names and backfills their category lists. Existing report IDs, evidence, status, assigned offices and customized routing are retained. Legacy single-category API submissions still work. API requests accept a primary `category` plus a `categories` array; values are validated and deduplicated, and the primary category is always included.
+
+Lists sort by submission date with report ID as a tie-breaker; updating an old report does not move it above newer submissions. Optional urgent-first sorting retains priority ordering. Category controls wait for ongoing photo analysis so a late AI response cannot overwrite a manual category correction.
+
+## One-click demo accounts
+
+Set `IIT_VOICE_DEMO_LOGIN=1` in `.env.local` and restart Python (or use `python3 -B server.py --demo-login`). The sign-in page shows **Try a demo account** buttons for active, verified sample accounts. Clicking a button starts the normal session for that account without copying credentials. Existing passwords and reports are retained. Student and Faculty still use the campus app; Main Admin and Validator Admin retain their actual permissions.
+
+Demo sign-in defaults to disabled, requires a loopback-bound backend and loopback requests with a localhost host, and must stay disabled on publicly hosted installations. Set `IIT_VOICE_DEMO_LOGIN=0` to remove the buttons and disable the endpoint. Normal credential sign-in remains available. New sample accounts created with `create_account(..., demo=True)` appear automatically; changing an account's role updates its demo button. Registration cannot mark an account as a demo account. The four original seeded sample identities are marked during the schema upgrade.
+
+Photo analysis also drafts the editable **Describe what you observed** field from visible conditions, without inventing a time, location, cause or eyewitness claim. Blank descriptions (or an unchanged prior AI draft) are filled automatically; user edits are preserved on re-analysis. **Use AI description draft** explicitly replaces the current text when desired. The final edited description is submitted normally, while the original AI draft remains private attachment metadata for validators. Failed/blocked/unclear analysis does not invent a description.
+
+AI category analysis evaluates all nine categories independently and selects every supported match. When extra categories are suggested, the additional-category section opens automatically for review. With a single supported category, the form explains that AI found no supported extras; it does not force an overlap. Changing the primary category preserves AI-selected or existing multiple-category tags; a lone manual/default category can be replaced. Reporters can uncheck any additional category manually.

@@ -1,9 +1,10 @@
-"""IIT Voice local pilot. Python 3.9+, standard library only."""
+"""IIT Voice local pilot. Python 3.9+; see requirements.txt."""
 import argparse
 import base64
 import hashlib
 import hmac
 import json
+import ipaddress
 import math
 import mimetypes
 import os
@@ -16,12 +17,15 @@ from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
+from dotenv import load_dotenv
+from photo_analysis import prepare_photo, suggest_category
+from report_categories import CATEGORIES, CATEGORY_GROUPS, DEFAULT_OFFICES, LEGACY_CATEGORIES, normalize_categories
 
 ROOT = Path(__file__).resolve().parent
+load_dotenv(ROOT / '.env.local', override=False)
 DATA = Path(os.environ.get('IIT_VOICE_DATA', str(ROOT / 'data')))
 DB = DATA / 'iit-voice.sqlite3'
 ROLES = ('student', 'validator', 'admin')
-CATEGORIES = ('Safety', 'Repair & maintenance', 'Student needs')
 STATUSES = ('submitted', 'needs_information', 'validated', 'in_progress', 'resolved', 'closed', 'rejected', 'duplicate')
 TRANSITIONS = {
     'submitted': {'validated', 'needs_information', 'rejected', 'duplicate'},
@@ -32,6 +36,7 @@ TRANSITIONS = {
 }
 MAX_BODY = 4 * 1024 * 1024
 SECURE = os.environ.get('IIT_VOICE_SECURE_COOKIE') == '1'
+DEMO_LOGIN = os.environ.get('IIT_VOICE_DEMO_LOGIN') == '1'
 
 
 def now():
@@ -94,6 +99,9 @@ def initialize():
         CREATE TABLE IF NOT EXISTS attachments (
           id INTEGER PRIMARY KEY, report_id INTEGER NOT NULL REFERENCES reports(id),
           content BLOB NOT NULL, mime TEXT NOT NULL, created_at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS photo_analyses (
+          token TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id),
+          photo_hash TEXT NOT NULL, metadata TEXT NOT NULL, created_at REAL NOT NULL);
         CREATE TABLE IF NOT EXISTS notifications (
           id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id),
           report_id INTEGER REFERENCES reports(id), message TEXT NOT NULL,
@@ -106,14 +114,34 @@ def initialize():
         CREATE INDEX IF NOT EXISTS reports_visibility ON reports(visibility,status);
         CREATE INDEX IF NOT EXISTS reports_reporter ON reports(reporter_id);
         ''')
+        if 'is_demo' not in [r['name'] for r in c.execute('PRAGMA table_info(users)')]:
+            c.execute('ALTER TABLE users ADD COLUMN is_demo INTEGER NOT NULL DEFAULT 0')
+            # Recognize the four previously seeded sample identities, not arbitrary registrations.
+            for email, name in (('admin@iitvoice.local', 'Morgan Lee'), ('validator@iitvoice.local', 'Sam Cruz'), ('student@iitvoice.local', 'Alex Reyes'), ('faculty@iitvoice.local', 'Jamie Santos')):
+                c.execute('UPDATE users SET is_demo=1 WHERE email=? AND name=?', (email, name))
         if 'public_title' not in [r['name'] for r in c.execute('PRAGMA table_info(reports)')]:
             c.execute("ALTER TABLE reports ADD COLUMN public_title TEXT NOT NULL DEFAULT ''")
         if 'location_details' not in [r['name'] for r in c.execute('PRAGMA table_info(reports)')]:
             c.execute("ALTER TABLE reports ADD COLUMN location_details TEXT NOT NULL DEFAULT ''")
+        attachment_columns = {r['name'] for r in c.execute('PRAGMA table_info(attachments)')}
+        for name, default in (('filename', ''), ('metadata', '{}')):
+            if name not in attachment_columns:
+                c.execute("ALTER TABLE attachments ADD COLUMN %s TEXT NOT NULL DEFAULT '%s'" % (name, default))
         for name in ('Security & Investigation', 'Physical Plant', 'Student Services', 'ICT'):
             c.execute('INSERT OR IGNORE INTO offices(name) VALUES(?)', (name,))
-        for cat, office in zip(CATEGORIES, ('Security & Investigation', 'Physical Plant', 'Student Services')):
+        if 'categories' not in [r['name'] for r in c.execute('PRAGMA table_info(reports)')]:
+            c.execute("ALTER TABLE reports ADD COLUMN categories TEXT NOT NULL DEFAULT '[]'")
+        # Preserve existing routing customizations while renaming the old categories.
+        for old, new in LEGACY_CATEGORIES.items():
+            c.execute('INSERT OR IGNORE INTO routing SELECT ?,office_id FROM routing WHERE category=?', (new, old))
+            c.execute('DELETE FROM routing WHERE category=?', (old,))
+            c.execute('UPDATE reports SET category=? WHERE category=?', (new, old))
+        for r in c.execute("SELECT id,category FROM reports WHERE categories='[]'").fetchall():
+            c.execute('UPDATE reports SET categories=? WHERE id=?', (json.dumps([r['category']]), r['id']))
+        for cat, office in DEFAULT_OFFICES.items():
+            c.execute('INSERT OR IGNORE INTO offices(name) VALUES(?)', (office,))
             c.execute('INSERT OR IGNORE INTO routing VALUES (?,(SELECT id FROM offices WHERE name=?))', (cat, office))
+
 
 
 def audit(c, actor, action, entity, detail=''):
@@ -150,6 +178,56 @@ def field(body, name, minimum=1, maximum=200):
     return value
 
 
+def report_categories(body, primary):
+    try:
+        return normalize_categories(primary, body.get('categories', [primary]))
+    except ValueError as error:
+        raise APIError(400, str(error))
+
+
+def analysis_categories(result):
+    # Cached analyses from the previous taxonomy still work with current forms.
+    if result.get('category'):
+        result['category'], result['categories'] = normalize_categories(result['category'], result.get('categories', [result['category']]))
+    else:
+        result['categories'] = []
+    return result
+
+
+def inspect_photo(c, u, encoded, force=False):
+    """Screen every upload; cache only server results bound to user and exact bytes."""
+    try:
+        gps, image = prepare_photo(encoded)
+    except ValueError as error:
+        raise APIError(400, str(error))
+    photo_hash = hashlib.sha256(base64.b64decode(encoded)).hexdigest()
+    cached = c.execute('SELECT * FROM photo_analyses WHERE user_id=? AND photo_hash=? AND created_at>? ORDER BY created_at DESC LIMIT 1', (u['id'], photo_hash, time.time()-86400)).fetchone()
+    if cached and not force:
+        metadata = json.loads(cached['metadata'])
+        if metadata.get('screening') and ('description' in metadata or metadata['screening']['status'] in ('rejected', 'unverified')):
+            return {**analysis_categories(metadata), 'analysis_token': cached['token'], 'ai_available': bool(os.environ.get('GEMINI_API_KEY'))}
+    result = {'gps': gps, 'category': None, 'categories': [], 'title': None, 'description': None, 'reason': '', 'ai_error': '',
+              'screening': {'status': 'unverified', 'reason': 'Automatic screening unavailable. The photo needs manual review.'}}
+    limit_key = 'photo-ai:' + str(u['id'])
+    limit = c.execute('SELECT * FROM login_limits WHERE key=?', (limit_key,)).fetchone()
+    try:
+        if limit and limit['start'] >= time.time()-3600 and limit['attempts'] >= 20:
+            raise RuntimeError('Photo analysis limit reached. Try again later. This photo needs manual review.')
+        if os.environ.get('GEMINI_API_KEY'):
+            stamp = time.time()
+            c.execute('INSERT INTO login_limits VALUES(?,1,?) ON CONFLICT(key) DO UPDATE SET attempts=CASE WHEN start<? THEN 1 ELSE attempts+1 END, start=CASE WHEN start<? THEN excluded.start ELSE start END', (limit_key, stamp, stamp-3600, stamp-3600))
+            c.commit()
+        result.update(analysis_categories(suggest_category(image)))
+        result.update(model=os.environ.get('IIT_VOICE_AI_MODEL', 'gemini-3.5-flash-lite'), analyzed_at=now())
+    except RuntimeError as error:
+        result['ai_error'] = str(error)
+    token = secrets.token_urlsafe(24)
+    c.execute('DELETE FROM photo_analyses WHERE created_at<?', (time.time()-86400,))
+    c.execute('INSERT INTO photo_analyses VALUES(?,?,?,?,?)', (token, u['id'], photo_hash, json.dumps(result), time.time()))
+    c.commit()  # Keep screening results even when the subsequent upload is rejected.
+    return {**result, 'analysis_token': token, 'ai_available': bool(os.environ.get('GEMINI_API_KEY'))}
+
+
 def can_read(u, r):
     return u['role'] in ('admin', 'validator') or r['reporter_id'] == u['id'] or (r['visibility'] == 'campus' and r['status'] in ('validated', 'in_progress', 'resolved', 'closed'))
 
@@ -158,6 +236,7 @@ def report_json(c, u, r, detail=False):
     privileged = u['role'] in ('admin', 'validator') or r['reporter_id'] == u['id']
     keys = ['id', 'title', 'category', 'location', 'latitude', 'longitude', 'priority', 'status', 'visibility', 'public_summary', 'created_at', 'updated_at', 'office_id']
     result = {k: r[k] for k in keys}
+    result['categories'] = json.loads(r['categories']) or [r['category']]
     result['public_title'] = r['public_title']
     if not privileged:
         result['title'] = r['public_title'] or 'Campus concern'
@@ -172,7 +251,7 @@ def report_json(c, u, r, detail=False):
         result['duplicate_of'] = r['duplicate_of']
     if detail:
         # Attachments stay private even when the campus summary is published.
-        result['attachments'] = [dict(x) for x in c.execute('SELECT id,mime,created_at FROM attachments WHERE report_id=?', (r['id'],))] if privileged else []
+        result['attachments'] = [{**dict(x), 'metadata': json.loads(x['metadata'])} for x in c.execute('SELECT id,mime,filename,metadata,created_at FROM attachments WHERE report_id=?', (r['id'],))] if privileged else []
         events = c.execute('SELECT e.*,u.name FROM events e JOIN users u ON u.id=e.actor_id WHERE report_id=? ORDER BY e.id', (r['id'],)).fetchall()
         result['events'] = []
         for e in events:
@@ -205,7 +284,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('X-Frame-Options', 'DENY')
         self.send_header('Referrer-Policy', 'strict-origin-when-cross-origin')
         self.send_header('Cache-Control', 'no-store')
-        self.send_header('Content-Security-Policy', "default-src 'self'; script-src 'self' https://unpkg.com; style-src 'self' 'unsafe-inline' https://unpkg.com; img-src 'self' data: https://tile.openstreetmap.org; frame-src https://www.google.com/maps/embed; connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'")
+        self.send_header('Content-Security-Policy', "default-src 'self'; script-src 'self' https://unpkg.com; style-src 'self' 'unsafe-inline' https://unpkg.com; img-src 'self' data: blob: https://tile.openstreetmap.org; frame-src https://www.google.com/maps/embed; connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'")
         for k, v in (extra or {}).items():
             self.send_header(k, v)
         self.end_headers()
@@ -277,7 +356,32 @@ class Handler(BaseHTTPRequestHandler):
         finally:
             self._db = None
 
+    def demo_enabled(self):
+        hostname = urlsplit('http://' + self.headers.get('Host', '')).hostname
+        return DEMO_LOGIN and ipaddress.ip_address(self.client_address[0]).is_loopback and ipaddress.ip_address(self.server.server_address[0]).is_loopback and hostname in ('127.0.0.1', 'localhost', '::1')
+
+    def sign_in(self, c, u):
+        check(u['active'] and u['verified'], 'Your account is pending verification or inactive.', 403)
+        token, csrf = secrets.token_urlsafe(32), secrets.token_urlsafe(24)
+        c.execute('DELETE FROM sessions WHERE expires<?', (time.time(),))
+        c.execute('INSERT INTO sessions VALUES(?,?,?,?)', (hashlib.sha256(token.encode()).hexdigest(), u['id'], csrf, time.time()+43200))
+        self.send(200, {'user': user_json(u), 'csrf': csrf}, extra={'Set-Cookie': self.cookie(token)})
+
     def api(self, c, method, path):
+        if path == '/api/demo/accounts' and method == 'GET':
+            accounts = [dict(account) for account in c.execute('SELECT id,name,role,affiliation FROM users WHERE is_demo=1 AND active=1 AND verified=1 ORDER BY id')] if self.demo_enabled() else []
+            self.send(200, {'accounts': accounts})
+            return
+        if path == '/api/demo/login' and method == 'POST':
+            check(self.demo_enabled(), 'Demo sign-in is only available in local demo mode.', 403)
+            origin = self.headers.get('Origin')
+            check(not origin or urlsplit(origin).netloc == self.headers.get('Host'), 'Cross-origin request denied.', 403)
+            account_id = self.body().get('account_id')
+            check(type(account_id) is int, 'Choose a demo account.')
+            u = c.execute('SELECT * FROM users WHERE id=? AND is_demo=1', (account_id,)).fetchone()
+            check(u, 'Demo account unavailable.', 404)
+            self.sign_in(c, u)
+            return
         if method == 'POST' and path in ('/api/login', '/api/register'):
             origin = self.headers.get('Origin')
             check(not origin or urlsplit(origin).netloc == self.headers.get('Host'), 'Cross-origin request denied.', 403)
@@ -301,15 +405,17 @@ class Handler(BaseHTTPRequestHandler):
             dummy = '00' * 16 + ':' + '00' * 32
             valid = password_matches(password, u['password'] if u else dummy)
             check(u and valid, 'Email or password is incorrect.', 401)
-            check(u['active'] and u['verified'], 'Your account is pending verification or inactive.', 403)
             c.execute('DELETE FROM login_limits WHERE key=?', (limit_key,))
-            token, csrf = secrets.token_urlsafe(32), secrets.token_urlsafe(24)
-            c.execute('DELETE FROM sessions WHERE expires<?', (time.time(),))
-            c.execute('INSERT INTO sessions VALUES(?,?,?,?)', (hashlib.sha256(token.encode()).hexdigest(), u['id'], csrf, time.time()+43200))
-            self.send(200, {'user': user_json(u), 'csrf': csrf}, extra={'Set-Cookie': self.cookie(token)})
+            self.sign_in(c, u)
             return
 
         u, session = self.authenticate(c, method != 'GET')
+        if path == '/api/photos/inspect' and method == 'POST':
+            b = self.body()
+            check(type(b.get('analyze', False)) is bool, 'Invalid analysis option.')
+            result = inspect_photo(c, u, b.get('data', ''), force=b.get('analyze', False))
+            self.send(200, result)
+            return
         if path == '/api/me' and method == 'GET':
             self.send(200, {'user': user_json(u), 'csrf': session['csrf']})
             return
@@ -318,17 +424,18 @@ class Handler(BaseHTTPRequestHandler):
             self.send(200, {'ok': True}, extra={'Set-Cookie': self.cookie('', 0)})
             return
         if path == '/api/bootstrap' and method == 'GET':
-            reports = [report_json(c, u, r) for r in c.execute('SELECT * FROM reports ORDER BY updated_at DESC') if can_read(u, r)]
+            reports = [report_json(c, u, r) for r in c.execute('SELECT * FROM reports ORDER BY created_at DESC,id DESC') if can_read(u, r)]
             notifications = [dict(r) for r in c.execute('SELECT * FROM notifications WHERE user_id=? ORDER BY id DESC LIMIT 100', (u['id'],))]
             offices = [dict(r) for r in c.execute('SELECT * FROM offices')]
             routing = [dict(r) for r in c.execute('SELECT * FROM routing')]
             # Approximate view center. This is not an authoritative campus boundary.
-            self.send(200, {'reports': reports, 'offices': offices, 'routing': routing, 'notifications': notifications, 'categories': CATEGORIES, 'map': {'center': [8.2415, 124.2430], 'zoom': 17}, 'admins': [dict(r) for r in c.execute("SELECT id,name,role FROM users WHERE active=1 AND verified=1 AND role IN ('admin','validator')")] if u['role'] != 'student' else []})
+            self.send(200, {'reports': reports, 'offices': offices, 'routing': routing, 'notifications': notifications, 'categories': CATEGORIES, 'category_groups': CATEGORY_GROUPS, 'map': {'center': [8.2415, 124.2430], 'zoom': 17}, 'admins': [dict(r) for r in c.execute("SELECT id,name,role FROM users WHERE active=1 AND verified=1 AND role IN ('admin','validator')")] if u['role'] != 'student' else []})
             return
         if path == '/api/reports' and method == 'POST':
             b = self.body()
             title, description = field(b, 'title', 5, 150), field(b, 'description', 10, 5000)
-            category, location = field(b, 'category'), field(b, 'location', 3, 200)
+            category, categories = report_categories(b, field(b, 'category'))
+            location = field(b, 'location', 3, 200)
             location_details = field(b, 'location_details', 0, 500)
             priority = 'normal' if u['role'] == 'student' else b.get('priority', 'normal')
             check(category in CATEGORIES and priority in ('low', 'normal', 'high', 'urgent'), 'Invalid category or priority.')
@@ -338,6 +445,7 @@ class Handler(BaseHTTPRequestHandler):
                 check(type(lat) in (int, float) and type(lng) in (int, float) and math.isfinite(lat) and math.isfinite(lng) and -90 <= lat <= 90 and -180 <= lng <= 180, 'Invalid location coordinates.')
             stamp = now()
             rid = c.execute('INSERT INTO reports(reporter_id,title,description,category,location,location_details,latitude,longitude,priority,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)', (u['id'], title, description, category, location, location_details, lat, lng, priority, stamp, stamp)).lastrowid
+            c.execute('UPDATE reports SET categories=? WHERE id=?', (json.dumps(categories), rid))
             event(c, rid, u['id'], 'created', 'Report submitted for validation.')
             audit(c, u['id'], 'report.created', str(rid))
             for admin in c.execute("SELECT id FROM users WHERE role IN ('admin','validator') AND verified=1 AND active=1").fetchall():
@@ -380,13 +488,27 @@ class Handler(BaseHTTPRequestHandler):
                 check(0 < len(content) <= 2 * 1024 * 1024, 'Image must be under 2 MB.')
                 mime = 'image/png' if content.startswith(b'\x89PNG\r\n\x1a\n') else 'image/jpeg' if content.startswith(b'\xff\xd8\xff') else None
                 check(mime, 'Only PNG or JPEG evidence is supported.')
-                aid = c.execute('INSERT INTO attachments(report_id,content,mime,created_at) VALUES(?,?,?,?)', (rid, content, mime, now())).lastrowid
+                filename = field(b, 'filename', 0, 200)
+                token = field(b, 'analysis_token', 0, 120)
+                metadata = None
+                if token:
+                    analysis = c.execute('SELECT * FROM photo_analyses WHERE token=? AND created_at>?', (token, time.time()-86400)).fetchone()
+                    check(analysis and analysis['user_id'] == u['id'], 'Photo analysis is unavailable. Check this photo again.')
+                    check(analysis['photo_hash'] == hashlib.sha256(content).hexdigest(), 'This analysis belongs to a different photo. Check the selected photo again.')
+                    metadata = analysis_categories(json.loads(analysis['metadata']))
+                if not metadata or not metadata.get('screening'):
+                    metadata = inspect_photo(c, u, b['data'])
+                check(metadata['screening']['status'] != 'rejected', 'This photo was blocked by content safety screening. Replace it with a non-explicit campus photo or submit without a photo.', 422)
+                metadata = {key: value for key, value in metadata.items() if key not in ('analysis_token', 'ai_available')}
+                metadata['report_pin'] = {'latitude': r['latitude'], 'longitude': r['longitude']} if r['latitude'] is not None else None
+                aid = c.execute('INSERT INTO attachments(report_id,content,mime,filename,metadata,created_at) VALUES(?,?,?,?,?,?)', (rid, content, mime, filename, json.dumps(metadata), now())).lastrowid
                 audit(c, u['id'], 'report.evidence', str(rid))
                 self.send(201, {'id': aid})
                 return
             if method == 'PATCH' and not sub:
                 check(u['role'] in ('admin', 'validator'), 'Admin access required.', 403)
                 b = self.body()
+                category, categories = report_categories(b, b.get('category', r['category'])) if 'category' in b or 'categories' in b else (r['category'], json.loads(r['categories']))
                 status = b.get('status', r['status'])
                 check(status in STATUSES, 'Invalid status.')
                 check(status == r['status'] or status in TRANSITIONS[r['status']], 'This status transition is not allowed.')
@@ -414,10 +536,11 @@ class Handler(BaseHTTPRequestHandler):
                     check(duplicate and duplicate != rid and c.execute("SELECT 1 FROM reports WHERE id=? AND status IN ('validated','in_progress','resolved','closed')", (duplicate,)).fetchone(), 'Link to an existing validated report.')
                 else:
                     duplicate = None
-                c.execute('UPDATE reports SET status=?,visibility=?,public_summary=?,public_title=?,priority=?,office_id=?,assigned_to=?,duplicate_of=?,updated_at=? WHERE id=?', (status, visibility, summary.strip(), public_title.strip(), priority, office, assigned, duplicate, now(), rid))
+                c.execute('UPDATE reports SET category=?,categories=?,status=?,visibility=?,public_summary=?,public_title=?,priority=?,office_id=?,assigned_to=?,duplicate_of=?,updated_at=? WHERE id=?', (category, json.dumps(categories), status, visibility, summary.strip(), public_title.strip(), priority, office, assigned, duplicate, now(), rid))
                 priority_note = ('Priority changed from %s to %s. ' % (r['priority'], priority)) if priority != r['priority'] else ''
-                event(c, rid, u['id'], 'status', status + ' — ' + priority_note + note)
-                audit(c, u['id'], 'report.updated', str(rid), json.dumps({'from': r['status'], 'to': status, 'visibility': visibility, 'from_priority': r['priority'], 'to_priority': priority}))
+                category_note = ('Categories changed to %s. ' % ', '.join(categories)) if categories != json.loads(r['categories']) else ''
+                event(c, rid, u['id'], 'status', status + ' — ' + priority_note + category_note + note)
+                audit(c, u['id'], 'report.updated', str(rid), json.dumps({'from': r['status'], 'to': status, 'visibility': visibility, 'from_priority': r['priority'], 'to_priority': priority, 'from_categories': json.loads(r['categories']), 'to_categories': categories}))
                 message = 'priority is now ' + priority if status == r['status'] and priority != r['priority'] else 'is now ' + status.replace('_', ' ')
                 notify(c, r['reporter_id'], rid, 'Report #' + str(rid) + ' ' + message + '.')
                 if assigned and assigned != u['id']:
@@ -469,11 +592,13 @@ class Handler(BaseHTTPRequestHandler):
         raise APIError(404, 'Endpoint not found.')
 
 
-def create_account(email, name, role, password, affiliation='Staff'):
+def create_account(email, name, role, password, affiliation='Staff', demo=False):
     check(role in ROLES, 'Invalid role.')
     check(len(password) >= 12, 'Use a password of at least 12 characters.')
     with connect() as c:
         uid = c.execute('INSERT INTO users(name,email,password,role,affiliation,verified,created_at) VALUES(?,?,?,?,?,1,?)', (name, email.lower(), password_hash(password), role, affiliation, now())).lastrowid
+        if demo:
+            c.execute('UPDATE users SET is_demo=1 WHERE id=?', (uid,))
         audit(c, uid, 'account.bootstrapped', str(uid), role)
         return uid
 
@@ -482,10 +607,10 @@ def seed_demo():
     with connect() as c:
         check(c.execute('SELECT count(*) FROM users').fetchone()[0] == 0, 'Demo seeding requires an empty database.')
     password = secrets.token_urlsafe(15)
-    admin = create_account('admin@iitvoice.local', 'Morgan Lee', 'admin', password)
-    validator = create_account('validator@iitvoice.local', 'Sam Cruz', 'validator', password)
-    student = create_account('student@iitvoice.local', 'Alex Reyes', 'student', password, 'Student')
-    create_account('faculty@iitvoice.local', 'Jamie Santos', 'student', password, 'Faculty')
+    admin = create_account('admin@iitvoice.local', 'Morgan Lee', 'admin', password, demo=True)
+    validator = create_account('validator@iitvoice.local', 'Sam Cruz', 'validator', password, demo=True)
+    student = create_account('student@iitvoice.local', 'Alex Reyes', 'student', password, 'Student', demo=True)
+    create_account('faculty@iitvoice.local', 'Jamie Santos', 'student', password, 'Faculty', demo=True)
     examples = [
         ('Ceiling leak near classroom', 'Water drips near the classroom entrance after heavy rain. The wet flooring may cause slipping.', 'Repair & maintenance', 'Academic building · Floor 2', 8.242, 124.243, 'high', 'in_progress', 'campus', 2),
         ('Walkway lighting outage', 'Several walkway lights are not working during the evening. Please inspect the electrical supply.', 'Safety', 'Campus walkway', 8.241, 124.2428, 'urgent', 'submitted', 'restricted', 1),
@@ -494,9 +619,10 @@ def seed_demo():
     ]
     with connect() as c:
         for title, description, cat, loc, lat, lng, priority, status, visibility, office in examples:
+            cat, categories = normalize_categories(cat, [cat])
             stamp = now()
             rid = c.execute('INSERT INTO reports(reporter_id,title,description,category,location,latitude,longitude,priority,status,visibility,public_summary,office_id,assigned_to,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)', (student, title, description, cat, loc, lat, lng, priority, status, visibility, description if visibility == 'campus' else '', office, validator, stamp, stamp)).lastrowid
-            c.execute('UPDATE reports SET public_title=? WHERE id=?', (title if visibility == 'campus' else '', rid))
+            c.execute('UPDATE reports SET public_title=?,categories=? WHERE id=?', (title if visibility == 'campus' else '', json.dumps(categories), rid))
             event(c, rid, student, 'created', 'Report submitted for review.')
             if status != 'submitted':
                 event(c, rid, admin, 'status', status + ' — ' + ('Initial inspection completed. Repair is scheduled.' if status == 'in_progress' else 'Service restored. Please confirm the issue is fixed.'))
@@ -507,12 +633,17 @@ def seed_demo():
 
 
 def main():
+    global DEMO_LOGIN
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--host', default='127.0.0.1')
     parser.add_argument('--port', type=int, default=8000)
+    parser.add_argument('--demo-login', action='store_true', help='Enable one-click sample account sign-in on loopback only')
     parser.add_argument('--seed-demo', action='store_true')
     parser.add_argument('--create-admin', metavar='EMAIL')
     args = parser.parse_args()
+    DEMO_LOGIN = DEMO_LOGIN or args.demo_login
+    if DEMO_LOGIN and args.host not in ('127.0.0.1', 'localhost', '::1'):
+        parser.error('Demo sign-in requires a loopback host. Disable IIT_VOICE_DEMO_LOGIN for public hosting.')
     initialize()
     if args.seed_demo:
         seed_demo()
