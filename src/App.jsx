@@ -374,7 +374,12 @@ export default function App() {
       },
       body: options.body ? JSON.stringify(options.body) : undefined,
     });
-    const result = await response.json();
+    let result;
+    try {
+      result = await response.json();
+    } catch {
+      throw new Error('The server is unavailable. Please try again shortly.');
+    }
     if (!response.ok) {
       if (response.status === 401) {
         csrf.current = '';

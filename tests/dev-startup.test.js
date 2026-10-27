@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer as createSocketServer } from 'node:net';
+import { createServer as createHttpServer } from 'node:http';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -38,6 +39,7 @@ test(
     Object.assign(process.env, {
       IIT_VOICE_API_PORT: String(port),
       IIT_VOICE_DATA: data,
+      DATABASE_URL: '',
       GEMINI_API_KEY: '',
       IIT_VOICE_DEMO_LOGIN: '0',
     });
@@ -96,6 +98,49 @@ test(
         else process.env[name] = previous[name];
       }
       await rm(data, { recursive: true, force: true });
+    }
+  }
+);
+
+test(
+  'dev reuses a healthy API even when database-backed authentication is slow',
+  { timeout: 10000 },
+  async () => {
+    const port = await freePort();
+    const requests = [];
+    const backend = createHttpServer((request, response) => {
+      requests.push(request.url);
+      const send = () =>
+        response
+          .writeHead(request.url === '/api/health' ? 200 : 401, {
+            server: 'IITVoice',
+            'content-type': 'application/json',
+          })
+          .end('{}');
+      if (request.url === '/api/me') setTimeout(send, 1200);
+      else send();
+    });
+    await new Promise((resolve) => backend.listen(port, '127.0.0.1', resolve));
+    const previous = process.env.IIT_VOICE_API_PORT;
+    process.env.IIT_VOICE_API_PORT = String(port);
+    let frontend;
+    try {
+      frontend = await createServer({
+        root,
+        configFile: join(root, 'vite.config.js'),
+        logLevel: 'silent',
+        server: { host: '127.0.0.1', port: 0, strictPort: true },
+      });
+      await frontend.listen();
+      const response = await fetch(frontend.resolvedUrls.local[0] + 'api/me');
+      assert.equal(response.status, 401, 'Slow cloud-backed requests must still be proxied');
+      await response.body?.cancel();
+      assert.ok(requests.includes('/api/health'));
+    } finally {
+      await frontend?.close();
+      await new Promise((resolve) => backend.close(resolve));
+      if (previous === undefined) delete process.env.IIT_VOICE_API_PORT;
+      else process.env.IIT_VOICE_API_PORT = previous;
     }
   }
 );

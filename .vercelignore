@@ -1,0 +1,12 @@
+data/
+.env
+.env.*
+!.env.example
+test-results/
+tmp/
+output/
+__pycache__/
+*.pyc
+.codex/
+.agents/
+.aws/

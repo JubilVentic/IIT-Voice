@@ -15,6 +15,9 @@ from urllib.request import HTTPCookieProcessor, Request, build_opener
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import server
+
+# Integration tests always use disposable SQLite, even when local cloud settings exist.
+server.DATABASE_URL = ""
 from test_photo_analysis import sample_photo
 
 
@@ -177,6 +180,12 @@ class SystemTests(unittest.TestCase):
         cls.http.server_close()
         cls.thread.join()
         cls.temp.cleanup()
+
+    def test_health_does_not_wait_for_the_cloud_database(self):
+        with patch("server.connect", side_effect=RuntimeError("Database unavailable")):
+            status, result = Client(self.base).request("/api/health")
+        self.assertEqual(status, 200)
+        self.assertEqual(result, {"ok": True})
 
     def setUp(self):
         demo_patch = patch("server.DEMO_LOGIN", False)

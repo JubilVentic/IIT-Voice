@@ -9,11 +9,9 @@ const apiUrl = `http://127.0.0.1:${apiPort}`;
 
 async function apiReady() {
   try {
-    const response = await fetch(`${apiUrl}/api/me`, { signal: AbortSignal.timeout(500) });
+    const response = await fetch(`${apiUrl}/api/health`, { signal: AbortSignal.timeout(500) });
     await response.body?.cancel();
-    return (
-      [200, 401].includes(response.status) && response.headers.get('server')?.startsWith('IITVoice')
-    );
+    return response.status === 200 && response.headers.get('server')?.startsWith('IITVoice');
   } catch {
     return false;
   }
@@ -71,7 +69,8 @@ export default defineConfig({
             void server.close();
           }
         });
-        for (let attempt = 0; attempt < 50; attempt++) {
+        const deadline = Date.now() + 30000;
+        while (Date.now() < deadline) {
           if (failure) {
             stop();
             throw failure;

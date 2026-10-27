@@ -11,6 +11,7 @@ const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'iit-voice-browser-'));
 const env = {
   ...process.env,
   IIT_VOICE_DATA: temp,
+  DATABASE_URL: '',
   PYTHONUNBUFFERED: '1',
   GEMINI_API_KEY: 'browser-test-key',
   IIT_VOICE_DEMO_LOGIN: '1',
@@ -142,6 +143,20 @@ server.main()`,
     }
     await page.goto(base);
     await page.locator('.demo-accounts').waitFor();
+    await page.route('**/api/login', (route) =>
+      route.fulfill({ status: 404, contentType: 'text/plain', body: 'The page could not be found' })
+    );
+    await page.locator('[name=email]').fill('offline@test.local');
+    await page.locator('[name=password]').fill('disposable-browser-test-password');
+    await page.getByRole('button', { name: 'Sign in →', exact: true }).click();
+    await page
+      .getByRole('alert')
+      .filter({ hasText: 'The server is unavailable. Please try again shortly.' })
+      .waitFor();
+    await page.unroute('**/api/login');
+    await page.locator('[name=email]').fill('');
+    await page.locator('[name=password]').fill('');
+
     assert.equal(await page.locator('[data-demo-account]').count(), 6);
     await page.locator('.auth-campus-photo').evaluate((image) => image.decode());
     await page.screenshot({

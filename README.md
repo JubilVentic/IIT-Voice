@@ -122,7 +122,7 @@ npx playwright install chromium
 npm run test:browser
 ```
 
-Alternatively, use an installed Chrome with `IIT_VOICE_BROWSER_CHANNEL=chrome npm run test:browser`. The browser test uses disposable demo data and checks sign-in, role isolation, account/routing screens, submission, validation, resolution, map loading, and mobile overflow. Screenshots are saved in `test-results/` and excluded from Git. Third-party map resources need internet access for this check.
+Alternatively, use an installed Chrome with `IIT_VOICE_BROWSER_CHANNEL=chrome npm run test:browser`. The browser test uses disposable demo data and checks sign-in, role isolation, account/routing screens, submission, validation, resolution, map loading, and mobile overflow. Screenshots are saved in `test-results/` and excluded from Git. The campus plan is bundled locally. Tests use disposable SQLite even when Supabase is configured.
 
 ## Configuration
 
@@ -132,6 +132,10 @@ Alternatively, use an installed Chrome with `IIT_VOICE_BROWSER_CHANNEL=chrome np
 | `IIT_VOICE_SECURE_COOKIE=1` | Add the Secure flag to session cookies when serving through HTTPS |
 | `--port 8000`               | Local HTTP port                                                   |
 | `--host 127.0.0.1`          | Listening interface; localhost by default                         |
+
+## Supabase and Vercel
+
+Supabase Postgres is supported through the server-side `DATABASE_URL` setting. Leave it blank for the existing local SQLite database. The Vercel Python function keeps the existing login, role checks and evidence permissions, and uses the private `iit_voice` database schema. See [Supabase setup](SUPABASE_SETUP.md) for initialization, creating the first cloud Main Admin, Vercel environment variables and deployment verification. Existing local accounts and data are not automatically uploaded.
 
 ## University deployment work
 

@@ -19,6 +19,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
 from dotenv import load_dotenv
+from database import connect_postgres, insert_id
 from photo_analysis import prepare_photo, suggest_category, assess_completion
 from report_categories import (
     CATEGORIES,
@@ -32,6 +33,7 @@ ROOT = Path(__file__).resolve().parent
 load_dotenv(ROOT / ".env.local", override=False)
 DATA = Path(os.environ.get("IIT_VOICE_DATA", str(ROOT / "data")))
 DB = DATA / "iit-voice.sqlite3"
+DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
 ROLES = ("student", "validator", "admin", "office")
 STATUSES = (
     "submitted",
@@ -54,7 +56,7 @@ TRANSITIONS = {
     "duplicate": set(),
 }
 MAX_BODY = 4 * 1024 * 1024
-SECURE = os.environ.get("IIT_VOICE_SECURE_COOKIE") == "1"
+SECURE = os.environ.get("IIT_VOICE_SECURE_COOKIE") == "1" or os.environ.get("VERCEL") == "1"
 DEMO_LOGIN = os.environ.get("IIT_VOICE_DEMO_LOGIN") == "1"
 
 
@@ -71,6 +73,8 @@ class DatabaseConnection(sqlite3.Connection):
 
 
 def connect():
+    if DATABASE_URL:
+        return connect_postgres(DATABASE_URL)
     c = sqlite3.connect(DB, timeout=15, factory=DatabaseConnection)
     c.row_factory = sqlite3.Row
     c.execute("PRAGMA foreign_keys=ON")
@@ -88,6 +92,16 @@ def password_matches(password, stored):
 
 
 def initialize():
+    if DATABASE_URL:
+        with connect() as c:
+            # The checked-in SQL is also runnable in Supabase's SQL Editor.
+            c.connection.autocommit = True
+            c.connection.execute(
+                (ROOT / "supabase/migrations/202610270001_iit_voice.sql").read_text()
+            )
+            c.connection.autocommit = False
+            initialize_defaults(c)
+        return
     DATA.mkdir(parents=True, exist_ok=True)
     with connect() as c:
         schema = c.execute(
@@ -187,8 +201,6 @@ def initialize():
                     "ALTER TABLE attachments ADD COLUMN %s TEXT NOT NULL DEFAULT '%s'"
                     % (name, default)
                 )
-        for name in ("Security & Investigation", "Physical Plant", "Student Services", "ICT"):
-            c.execute("INSERT OR IGNORE INTO offices(name) VALUES(?)", (name,))
         if "categories" not in [r["name"] for r in c.execute("PRAGMA table_info(reports)")]:
             c.execute("ALTER TABLE reports ADD COLUMN categories TEXT NOT NULL DEFAULT '[]'")
         # Preserve existing routing customizations while renaming the old categories.
@@ -203,12 +215,18 @@ def initialize():
             c.execute(
                 "UPDATE reports SET categories=? WHERE id=?", (json.dumps([r["category"]]), r["id"])
             )
-        for cat, office in DEFAULT_OFFICES.items():
-            c.execute("INSERT OR IGNORE INTO offices(name) VALUES(?)", (office,))
-            c.execute(
-                "INSERT OR IGNORE INTO routing VALUES (?,(SELECT id FROM offices WHERE name=?))",
-                (cat, office),
-            )
+        initialize_defaults(c)
+
+
+def initialize_defaults(c):
+    for name in ("Security & Investigation", "Physical Plant", "Student Services", "ICT"):
+        c.execute("INSERT INTO offices(name) VALUES(?) ON CONFLICT DO NOTHING", (name,))
+    for cat, office in DEFAULT_OFFICES.items():
+        c.execute("INSERT INTO offices(name) VALUES(?) ON CONFLICT DO NOTHING", (office,))
+        c.execute(
+            "INSERT INTO routing VALUES (?,(SELECT id FROM offices WHERE name=?)) ON CONFLICT DO NOTHING",
+            (cat, office),
+        )
 
 
 def audit(c, actor, action, entity, detail=""):
@@ -298,7 +316,7 @@ def consume_photo_limit(c, u):
     if os.environ.get("GEMINI_API_KEY"):
         stamp = time.time()
         c.execute(
-            "INSERT INTO login_limits VALUES(?,1,?) ON CONFLICT(key) DO UPDATE SET attempts=CASE WHEN start<? THEN 1 ELSE attempts+1 END, start=CASE WHEN start<? THEN excluded.start ELSE start END",
+            "INSERT INTO login_limits VALUES(?,1,?) ON CONFLICT(key) DO UPDATE SET attempts=CASE WHEN login_limits.start<? THEN 1 ELSE login_limits.attempts+1 END, start=CASE WHEN login_limits.start<? THEN excluded.start ELSE login_limits.start END",
             (limit_key, stamp, stamp - 3600, stamp - 3600),
         )
         c.commit()
@@ -684,6 +702,10 @@ class Handler(BaseHTTPRequestHandler):
         self._db = None
         try:
             path = urlsplit(self.path).path
+            if path == "/api/health" and method == "GET":
+                # Process readiness must not depend on a cloud database round trip.
+                self.send(200, {"ok": True})
+                return
             if not path.startswith("/api/"):
                 check(method == "GET", "Method not allowed.", 405)
                 # Serve only the compiled React entry and build assets, never
@@ -803,7 +825,7 @@ class Handler(BaseHTTPRequestHandler):
                 429,
             )
             c.execute(
-                "INSERT INTO login_limits VALUES(?,1,?) ON CONFLICT(key) DO UPDATE SET attempts=CASE WHEN start<? THEN 1 ELSE attempts+1 END, start=CASE WHEN start<? THEN excluded.start ELSE start END",
+                "INSERT INTO login_limits VALUES(?,1,?) ON CONFLICT(key) DO UPDATE SET attempts=CASE WHEN login_limits.start<? THEN 1 ELSE login_limits.attempts+1 END, start=CASE WHEN login_limits.start<? THEN excluded.start ELSE login_limits.start END",
                 (limit_key, time.time(), time.time() - 900, time.time() - 900),
             )
             c.commit()  # Failed attempts must persist even when authentication raises.
@@ -911,7 +933,8 @@ class Handler(BaseHTTPRequestHandler):
                     "Invalid location coordinates.",
                 )
             stamp = now()
-            rid = c.execute(
+            rid = insert_id(
+                c,
                 "INSERT INTO reports(reporter_id,title,description,category,location,location_details,latitude,longitude,priority,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     u["id"],
@@ -926,7 +949,7 @@ class Handler(BaseHTTPRequestHandler):
                     stamp,
                     stamp,
                 ),
-            ).lastrowid
+            )
             c.execute("UPDATE reports SET categories=? WHERE id=?", (json.dumps(categories), rid))
             event(c, rid, u["id"], "created", "Report submitted for validation.")
             audit(c, u["id"], "report.created", str(rid))
@@ -1074,10 +1097,11 @@ class Handler(BaseHTTPRequestHandler):
                     if r["latitude"] is not None
                     else None
                 )
-                aid = c.execute(
+                aid = insert_id(
+                    c,
                     "INSERT INTO attachments(report_id,content,mime,filename,metadata,created_at) VALUES(?,?,?,?,?,?)",
                     (rid, content, mime, filename, json.dumps(metadata), now()),
-                ).lastrowid
+                )
                 audit(c, u["id"], "report.evidence", str(rid))
                 self.send(201, {"id": aid})
                 return
@@ -1517,10 +1541,11 @@ def create_account(email, name, role, password, affiliation="Staff", demo=False,
             ),
             "Office accounts need a valid office.",
         )
-        uid = c.execute(
+        uid = insert_id(
+            c,
             "INSERT INTO users(name,email,password,role,affiliation,verified,created_at) VALUES(?,?,?,?,?,1,?)",
             (name, email.lower(), password_hash(password), role, affiliation, now()),
-        ).lastrowid
+        )
         if role == "office":
             c.execute("UPDATE users SET office_id=? WHERE id=?", (office_id, uid))
         if demo:
@@ -1541,7 +1566,7 @@ def ensure_office_demos(password=None):
         ]:
             if not c.execute("SELECT 1 FROM users WHERE email=?", (email,)).fetchone():
                 office_id = c.execute("SELECT id FROM offices WHERE name=?", (office,)).fetchone()[
-                    0
+                    "id"
                 ]
                 c.execute(
                     "INSERT INTO users(name,email,password,role,affiliation,verified,active,created_at,is_demo,office_id) VALUES(?,?,?,'office','Staff',1,1,?,1,?)",
@@ -1558,7 +1583,7 @@ def ensure_office_demos(password=None):
 def seed_demo():
     with connect() as c:
         check(
-            c.execute("SELECT count(*) FROM users").fetchone()[0] == 0,
+            c.execute("SELECT count(*) AS count FROM users").fetchone()["count"] == 0,
             "Demo seeding requires an empty database.",
         )
     password = secrets.token_urlsafe(15)
@@ -1638,7 +1663,8 @@ def seed_demo():
         ) in examples:
             cat, categories = normalize_categories(cat, [cat])
             stamp = now()
-            rid = c.execute(
+            rid = insert_id(
+                c,
                 "INSERT INTO reports(reporter_id,title,description,category,location,latitude,longitude,priority,status,visibility,public_summary,office_id,assigned_to,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     student,
@@ -1655,13 +1681,13 @@ def seed_demo():
                     office,
                     c.execute(
                         "SELECT id FROM users WHERE role='office' AND office_id=?", (office,)
-                    ).fetchone()[0]
+                    ).fetchone()["id"]
                     if office in (2, 4)
                     else admin,
                     stamp,
                     stamp,
                 ),
-            ).lastrowid
+            )
             c.execute(
                 "UPDATE reports SET public_title=?,categories=? WHERE id=?",
                 (title if visibility == "campus" else "", json.dumps(categories), rid),
@@ -1700,6 +1726,9 @@ def main():
         help="Enable one-click sample account sign-in on loopback only",
     )
     parser.add_argument("--seed-demo", action="store_true")
+    parser.add_argument(
+        "--init-db", action="store_true", help="Initialize database tables and routing, then exit"
+    )
     parser.add_argument("--create-admin", metavar="EMAIL")
     args = parser.parse_args()
     DEMO_LOGIN = DEMO_LOGIN or args.demo_login
@@ -1708,6 +1737,9 @@ def main():
             "Demo sign-in requires a loopback host. Disable IIT_VOICE_DEMO_LOGIN for public hosting."
         )
     initialize()
+    if args.init_db:
+        print("Database initialized: " + ("Supabase Postgres" if DATABASE_URL else "local SQLite"))
+        return
     if args.seed_demo:
         seed_demo()
         return

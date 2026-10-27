@@ -1,0 +1,13 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": "vite",
+  "buildCommand": "npm run build",
+  "outputDirectory": "dist",
+  "functions": {
+    "api/index.py": {
+      "maxDuration": 120,
+      "excludeFiles": "{data/**,tests/**,test-results/**,tmp/**,output/**,node_modules/**,src/**,.env*,.git/**}"
+    }
+  },
+  "rewrites": [{ "source": "/api/:path*", "destination": "/api?route=:path*" }]
+}
