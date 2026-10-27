@@ -1,5 +1,6 @@
 export async function currentLocation(geolocation, onRetry) {
-  const request = options => new Promise((resolve, reject) => geolocation.getCurrentPosition(resolve, reject, options));
+  const request = (options) =>
+    new Promise((resolve, reject) => geolocation.getCurrentPosition(resolve, reject, options));
   try {
     return await request({ enableHighAccuracy: false, timeout: 12000, maximumAge: 60000 });
   } catch (error) {

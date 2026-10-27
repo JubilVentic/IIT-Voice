@@ -1,37 +1,99 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import L from 'leaflet';
-import { campusEmbedUrl, statusLabels, useVoice } from '../lib.js';
+import { priorities, reportCategories, statusLabels, useVoice } from '../lib.js';
+import campusPlanUrl from '../assets/tibanga-site-plan.png';
+import {
+  campusBounds,
+  planPosition,
+  gpsPosition,
+  isOnPlan,
+  planUnitsPerMeter,
+} from '../campus-plan.js';
+import { reportHotspots } from '../report-summary.js';
 import { currentLocation } from '../current-location.js';
+import { CategoryOptions } from './Categories.jsx';
+import {
+  categoryPins,
+  priorityPins,
+  pinAppearance,
+  hasMapPin,
+  filterMapReports,
+} from '../map-markers.js';
 
 const emptyReports = [];
-const pinIcon = resolved => L.divIcon({ className: '', html: `<div class="map-pin ${resolved ? 'resolved' : ''}"></div>`, iconSize: [22, 22], iconAnchor: [11, 11] });
+const pinIcon = ({ color = '#7a203c', symbol = '' } = {}) =>
+  L.divIcon({
+    className: 'report-marker',
+    html: `<svg class="map-pin" viewBox="0 0 32 44" aria-hidden="true"><path fill="${color}" stroke="white" stroke-width="2.5" d="M16 1.5C8 1.5 1.5 8 1.5 16c0 10 14.5 25.5 14.5 25.5S30.5 26 30.5 16C30.5 8 24 1.5 16 1.5Z"/>${symbol ? `<text x="16" y="20" text-anchor="middle" fill="white" font-size="13" font-weight="700" font-family="sans-serif">${symbol}</text>` : '<circle cx="16" cy="16" r="5" fill="white"/>'}</svg>`,
+    iconSize: [32, 44],
+    iconAnchor: [16, 42],
+    popupAnchor: [0, -38],
+  });
 
-export function ReportMap({ reports = emptyReports, large = false, pick = false, pin = null, onPick }) {
-  const { data, openReport, toast } = useVoice();
-  const container = useRef(null), mapRef = useRef(null), pickedMarker = useRef(null);
-  const [locating, setLocating] = useState(false), [locationError, setLocationError] = useState(''), [accuracy, setAccuracy] = useState(null);
+export function ReportMap({
+  reports = emptyReports,
+  large = false,
+  pick = false,
+  pin = null,
+  onPick,
+  colorBy = 'priority',
+  density = false,
+}) {
+  const { openReport, toast } = useVoice();
+  const container = useRef(null),
+    mapRef = useRef(null),
+    pickedMarker = useRef(null);
+  const [locating, setLocating] = useState(false),
+    [locationError, setLocationError] = useState(''),
+    [accuracy, setAccuracy] = useState(null);
   const [locationPhase, setLocationPhase] = useState('');
   const locationRequest = useRef(0);
-  const callbacks = useRef({ openReport, toast, onPick });
-  callbacks.current = { openReport, toast, onPick };
+  const fittedReports = useRef(reports);
+  const callbacks = useRef({ openReport, toast, onPick, pin });
+  callbacks.current = { openReport, toast, onPick, pin };
   async function useCurrentLocation() {
-    if (!navigator.geolocation) { setLocationError('This browser does not support current location. Select a pin on the map.'); return; }
-    if (!window.isSecureContext) { setLocationError('Current location requires HTTPS or localhost. Select a pin manually.'); return; }
+    if (!navigator.geolocation) {
+      setLocationError('This browser does not support current location. Select a pin on the map.');
+      return;
+    }
+    if (!window.isSecureContext) {
+      setLocationError('Current location requires HTTPS or localhost. Select a pin manually.');
+      return;
+    }
     const request = ++locationRequest.current;
-    setLocating(true); setLocationError(''); setAccuracy(null);
+    setLocating(true);
+    setLocationError('');
+    setAccuracy(null);
     setLocationPhase('Finding your location…');
     try {
       const position = await currentLocation(navigator.geolocation, () => {
-        if (request === locationRequest.current && mapRef.current) setLocationPhase('Retrying location…');
+        if (request === locationRequest.current && mapRef.current)
+          setLocationPhase('Retrying location…');
       });
       if (request !== locationRequest.current || !mapRef.current) return;
       const { latitude, longitude, accuracy } = position.coords;
-      callbacks.current.onPick?.({ latitude: +latitude.toFixed(6), longitude: +longitude.toFixed(6) });
-      mapRef.current.panTo([latitude, longitude], { animate: !window.matchMedia('(prefers-reduced-motion: reduce)').matches, duration: 0.35 });
+      if (!isOnPlan({ latitude, longitude })) {
+        setLocationError(
+          'Your device location is outside the supplied MSU–IIT site plan. Select the concern’s campus location on the plan.'
+        );
+        return;
+      }
+      callbacks.current.onPick?.({
+        latitude: +latitude.toFixed(6),
+        longitude: +longitude.toFixed(6),
+      });
+      mapRef.current.panTo(planPosition({ latitude, longitude }), {
+        animate: !window.matchMedia('(prefers-reduced-motion: reduce)').matches,
+        duration: 0.35,
+      });
       setAccuracy(Math.round(accuracy));
     } catch (error) {
       if (request !== locationRequest.current || !mapRef.current) return;
-      setLocationError(error.code === 1 ? 'Location access is blocked. Allow location for this site and enable Location Services for your browser.' : 'Your browser could not provide a location. Check Location Services, or open IIT Voice in Chrome or Safari and allow location. You can still click or drag a pin.');
+      setLocationError(
+        error.code === 1
+          ? 'Location access is blocked. Allow location for this site and enable Location Services for your browser.'
+          : 'Your browser could not provide a location. Check Location Services, or open IIT Voice in Chrome or Safari and allow location. You can still click or drag a pin.'
+      );
     } finally {
       if (request === locationRequest.current && mapRef.current) setLocating(false);
     }
@@ -39,58 +101,429 @@ export function ReportMap({ reports = emptyReports, large = false, pick = false,
   useEffect(() => {
     const animate = !window.matchMedia('(prefers-reduced-motion: reduce)').matches;
     const map = L.map(container.current, {
-      zoomAnimation: animate, fadeAnimation: animate, markerZoomAnimation: animate,
-      zoomSnap: 0.5, zoomDelta: 0.5, wheelPxPerZoomLevel: 180, wheelDebounceTime: 120,
-    }).setView(data.map.center, data.map.zoom);
+      crs: L.CRS.Simple,
+      minZoom: -4,
+      maxZoom: 2.5,
+      maxBounds: L.latLngBounds(campusBounds).pad(0.15),
+      maxBoundsViscosity: 1,
+      zoomAnimation: animate,
+      fadeAnimation: animate,
+      markerZoomAnimation: animate,
+      zoomSnap: 0.25,
+      zoomDelta: 0.5,
+      wheelPxPerZoomLevel: 180,
+      wheelDebounceTime: 120,
+    }).setView([437, 605], -1);
     mapRef.current = map;
-    let errors = 0;
-    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors' })
-      .on('tileerror', () => { if (++errors === 3) callbacks.current.toast('Map tiles unavailable. Written campus locations remain available.'); }).addTo(map);
-    if (pick) map.on('click', e => { locationRequest.current++; setLocating(false); setAccuracy(null); setLocationError(''); callbacks.current.onPick?.({ latitude: +e.latlng.lat.toFixed(6), longitude: +e.latlng.lng.toFixed(6) }); });
-    const observer = new ResizeObserver(() => map.invalidateSize());
+    L.imageOverlay(campusPlanUrl, campusBounds, {
+      alt: 'MSU–IIT Tibanga campus site development plan',
+      attribution:
+        'MSU–IIT · Tibanga site plan · Building lookup: © <a href="https://www.openstreetmap.org/copyright">OpenStreetMap contributors</a>',
+    })
+      .on('error', () => {
+        callbacks.current.toast(
+          'Campus plan unavailable. Written campus locations remain available.'
+        );
+      })
+      .addTo(map);
+    const fitControl = L.control({ position: 'topright' });
+    fitControl.onAdd = () => {
+      const button = L.DomUtil.create('button', 'btn campus-fit');
+      button.type = 'button';
+      button.textContent = 'Fit campus';
+      button.setAttribute('aria-label', 'Show the whole campus plan');
+      L.DomEvent.disableClickPropagation(button);
+      L.DomEvent.disableScrollPropagation(button);
+      button.addEventListener('click', () => map.fitBounds(campusBounds, { padding: [16, 16] }));
+      return button;
+    };
+    fitControl.addTo(map);
+    const northControl = L.control({ position: 'bottomleft' });
+    northControl.onAdd = () => {
+      const compass = L.DomUtil.create('div', 'campus-north');
+      compass.textContent = 'N →';
+      compass.title = 'Geographic north points approximately right on this site plan';
+      compass.setAttribute('aria-label', compass.title);
+      return compass;
+    };
+    northControl.addTo(map);
+    if (pick)
+      map.on('click', (e) => {
+        const point = gpsPosition(e.latlng);
+        if (!isOnPlan(point)) {
+          setLocationError('Select a location within the campus drawing.');
+          return;
+        }
+        locationRequest.current++;
+        setLocating(false);
+        setAccuracy(null);
+        setLocationError('');
+        callbacks.current.onPick?.(point);
+      });
+    let fitted = false;
+    const observer = new ResizeObserver(() => {
+      map.invalidateSize();
+      if (!fitted && container.current?.clientWidth && container.current?.clientHeight) {
+        map.fitBounds(campusBounds, { padding: [16, 16], animate: false });
+        // A whole landscape plan becomes unreadably small on a phone.
+        // Start closer to campus; Fit campus remains available for orientation.
+        if (container.current.clientWidth < 600)
+          map.setZoom(Math.max(map.getZoom(), -0.5), { animate: false });
+        fitted = true;
+      }
+    });
     observer.observe(container.current);
-    return () => { locationRequest.current++; observer.disconnect(); map.remove(); mapRef.current = null; pickedMarker.current = null; };
-  }, [data.map.center[0], data.map.center[1], data.map.zoom, pick]);
+    return () => {
+      locationRequest.current++;
+      observer.disconnect();
+      // Leaflet 1.9 leaves a zoom-transition timer running after remove().
+      map._animatingZoom = false;
+      map.remove();
+      mapRef.current = null;
+      pickedMarker.current = null;
+    };
+  }, [pick]);
   useEffect(() => {
     const map = mapRef.current;
     if (!map || pick) return;
-    const markers = L.layerGroup().addTo(map), points = [];
-    reports.forEach(r => {
-      if (r.latitude === null || r.longitude === null) return;
-      points.push([r.latitude, r.longitude]);
-      const popup = document.createElement('div');
-      const title = document.createElement('strong'); title.textContent = r.title;
-      const status = document.createElement('span'); status.textContent = statusLabels[r.status];
-      const button = document.createElement('button'); button.type = 'button'; button.className = 'btn link'; button.textContent = 'View concern →'; button.addEventListener('click', () => callbacks.current.openReport(r.id));
-      popup.append(title, document.createElement('br'), status, document.createElement('br'), button);
-      L.marker([r.latitude, r.longitude], { title: r.title, alt: r.title, icon: pinIcon(['resolved', 'closed'].includes(r.status)) }).bindPopup(popup).addTo(markers);
-    });
-    if (points.length) map.fitBounds(points, { padding: [35, 35], maxZoom: 17 });
-    return () => { markers.remove(); };
+    const markers = L.layerGroup().addTo(map);
+    if (density) {
+      reportHotspots(reports).forEach((cell) => {
+        const color = cell.count >= 4 ? '#98283d' : cell.count >= 2 ? '#bb5630' : '#aa701b';
+        const size = 28 + Math.min(14, cell.count * 2);
+        const popup = document.createElement('div');
+        const heading = document.createElement('strong');
+        heading.textContent = `${cell.count} ${cell.count === 1 ? 'report' : 'reports'} in this area`;
+        popup.append(heading);
+        const list = document.createElement('div');
+        list.className = 'hotspot-report-list';
+        cell.reports.forEach((report) => {
+          const button = document.createElement('button');
+          button.type = 'button';
+          button.className = 'btn link';
+          button.textContent = `IV-${String(report.id).padStart(4, '0')} · ${report.title}`;
+          button.addEventListener('click', () => callbacks.current.openReport(report.id));
+          list.append(button);
+        });
+        popup.append(list);
+        L.circle(planPosition(cell), {
+          radius: 35 * planUnitsPerMeter,
+          stroke: false,
+          fillColor: color,
+          fillOpacity: 0.18,
+          interactive: false,
+        }).addTo(markers);
+        const marker = L.marker(planPosition(cell), {
+          title: `${cell.count} reports in this area`,
+          icon: L.divIcon({
+            className: 'hotspot-marker',
+            html: `<span style="background:${color};width:${size}px;height:${size}px">${cell.count}</span>`,
+            iconSize: [size, size],
+            iconAnchor: [size / 2, size / 2],
+          }),
+        })
+          .bindPopup(popup)
+          .addTo(markers);
+        marker
+          .getElement()
+          .setAttribute('aria-label', `${cell.count} reports in this area. Open report list.`);
+        marker.getElement().dataset.count = cell.count;
+      });
+    } else
+      reports.forEach((r) => {
+        if (!hasMapPin(r)) return;
+        const popup = document.createElement('div');
+        const title = document.createElement('strong');
+        title.textContent = r.title;
+        const status = document.createElement('span');
+        status.textContent = statusLabels[r.status];
+        const priority = document.createElement('p');
+        priority.textContent = `Priority: ${priorities[r.priority]?.label || r.priority}`;
+        const categories = document.createElement('p');
+        categories.textContent = `Categories: ${reportCategories(r).join(' · ')} (primary: ${r.category})`;
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'btn link';
+        button.textContent = 'View concern →';
+        button.addEventListener('click', () => callbacks.current.openReport(r.id));
+        popup.append(title, document.createElement('br'), status, priority, categories, button);
+        const label = `${r.title} · ${priorities[r.priority]?.label || r.priority} priority · ${r.category} · ${statusLabels[r.status]}`;
+        const marker = L.marker(planPosition(r), {
+          title: label,
+          alt: label,
+          icon: pinIcon(pinAppearance(r, colorBy)),
+        })
+          .bindPopup(popup)
+          .addTo(markers);
+        marker.getElement().setAttribute('aria-label', label);
+        marker.getElement().dataset.reportId = r.id;
+        marker.getElement().dataset.priority = r.priority;
+      });
+    return () => {
+      markers.remove();
+    };
+  }, [reports, pick, colorBy, density]);
+  useEffect(() => {
+    if (pick || !mapRef.current) return;
+    if (fittedReports.current === reports) return;
+    fittedReports.current = reports;
+    const points = reports.filter((r) => hasMapPin(r) && isOnPlan(r)).map(planPosition);
+    if (points.length) mapRef.current.fitBounds(points, { padding: [60, 60], maxZoom: 0.5 });
   }, [reports, pick]);
   useEffect(() => {
     if (!pick || !mapRef.current) return;
     const map = mapRef.current;
-    if (!pin) { pickedMarker.current?.remove(); pickedMarker.current = null; setAccuracy(null); return; }
-    const point = [pin.latitude, pin.longitude];
+    if (!pin) {
+      pickedMarker.current?.remove();
+      pickedMarker.current = null;
+      setAccuracy(null);
+      return;
+    }
+    if (!isOnPlan(pin)) {
+      pickedMarker.current?.remove();
+      pickedMarker.current = null;
+      return;
+    }
+    const point = planPosition(pin);
     if (pickedMarker.current) {
       pickedMarker.current.getElement()?.classList.add('pin-glide');
       pickedMarker.current.setLatLng(point);
-    }
-    else pickedMarker.current = L.marker(point, { icon: pinIcon(false), draggable: true, autoPan: true, title: 'Drag to adjust report location', alt: 'Selected report location' })
-      .on('dragstart', e => { e.target.getElement()?.classList.remove('pin-glide'); })
-      .on('dragend', e => {
-        const point = e.target.getLatLng();
-        locationRequest.current++; setLocating(false); setLocationError('');
-        setAccuracy(null);
-        callbacks.current.onPick?.({ latitude: +point.lat.toFixed(6), longitude: +point.lng.toFixed(6) });
-      }).addTo(map);
-    if (!map.getBounds().contains(point)) map.panTo(point, { animate: !window.matchMedia('(prefers-reduced-motion: reduce)').matches, duration: 0.35 });
+    } else
+      pickedMarker.current = L.marker(point, {
+        icon: pinIcon(),
+        draggable: true,
+        autoPan: true,
+        title: 'Drag to adjust report location',
+        alt: 'Selected report location',
+      })
+        .on('dragstart', (e) => {
+          e.target.getElement()?.classList.remove('pin-glide');
+        })
+        .on('dragend', (e) => {
+          const point = gpsPosition(e.target.getLatLng());
+          locationRequest.current++;
+          setLocating(false);
+          setAccuracy(null);
+          if (!isOnPlan(point)) {
+            e.target.setLatLng(planPosition(callbacks.current.pin));
+            setLocationError('Keep the pin within the campus drawing.');
+            return;
+          }
+          setLocationError('');
+          callbacks.current.onPick?.(point);
+        })
+        .addTo(map);
+    if (!map.getBounds().contains(point))
+      map.panTo(point, {
+        animate: !window.matchMedia('(prefers-reduced-motion: reduce)').matches,
+        duration: 0.35,
+      });
   }, [pin, pick]);
-  return <>{pick && <><button type="button" className="btn primary" onClick={useCurrentLocation} disabled={locating}>{locating ? locationPhase : 'Use current location'}</button><p className="map-caption" role="status">{accuracy !== null ? `Device accuracy: about ${accuracy} m. Drag the pin to the exact spot.` : 'Click to place a pin, then drag it to adjust. Current location asks for browser permission.'}</p>{locationError && <p className="inline-error" role="alert">{locationError}</p>}</>}<div ref={container} id={pick ? 'pick-map' : 'campus-map'} className={`map ${large ? 'large' : ''} ${pick ? 'pick' : ''}`} aria-label={pick ? 'Click to select report location' : 'Campus concern map'}/></>;
+  return (
+    <>
+      {pick && (
+        <>
+          <button
+            type="button"
+            className="btn primary"
+            onClick={useCurrentLocation}
+            disabled={locating}
+          >
+            {locating ? locationPhase : 'Use current location'}
+          </button>
+          <p className="map-caption" role="status">
+            {accuracy !== null
+              ? `Device accuracy: about ${accuracy} m. Drag the pin to the exact spot.`
+              : 'Click to place a pin, then drag it to adjust. Current location asks for browser permission.'}
+          </p>
+          {locationError && (
+            <p className="inline-error" role="alert">
+              {locationError}
+            </p>
+          )}
+        </>
+      )}
+      <div
+        ref={container}
+        id={pick ? 'pick-map' : 'campus-map'}
+        className={`map ${large ? 'large' : ''} ${pick ? 'pick' : ''}`}
+        aria-label={
+          pick
+            ? 'Click to select report location'
+            : density
+              ? 'Report concentration map'
+              : 'Campus concern map'
+        }
+      />
+      <p className="map-caption site-plan-note">
+        MSU–IIT Tibanga site plan · GPS alignment is approximate. Confirm the building and adjust
+        the pin.
+      </p>
+      {pick && pin && !isOnPlan(pin) && (
+        <p className="inline-error" role="alert">
+          The selected GPS location is outside the supplied campus plan. Select a campus location
+          manually.
+        </p>
+      )}
+    </>
+  );
 }
 
 export function CampusMap({ reports, large = false }) {
-  const [view, setView] = useState('google');
-  return <><div className="map-switch" role="group" aria-label="Campus map view"><button type="button" className="btn" data-map-view="google" aria-pressed={view === 'google'} onClick={() => setView('google')}>Google campus map</button><button type="button" className="btn" data-map-view="reports" aria-pressed={view === 'reports'} onClick={() => setView('reports')}>Report pins</button></div>{view === 'google' ? <iframe className={`campus-embed ${large ? 'large' : ''}`} title="MSU–IIT campus location on Google Maps" src={campusEmbedUrl} allowFullScreen loading="lazy" referrerPolicy="strict-origin-when-cross-origin"/> : <ReportMap reports={reports} large={large}/>}<p className="map-caption">{view === 'google' ? 'Explore the campus on Google Maps. Select Report pins to view IIT Voice concerns.' : 'IIT Voice report pins · Maroon: active · Gold: resolved. Select a pin for details.'}</p></>;
+  const { data } = useVoice();
+  const [view, setView] = useState('reports');
+  const [colorBy, setColorBy] = useState('priority'),
+    [category, setCategory] = useState(''),
+    [priority, setPriority] = useState(''),
+    [status, setStatus] = useState('');
+  const visible = useMemo(
+    () => filterMapReports(reports, { category, priority, status }),
+    [reports, category, priority, status]
+  );
+  const legend =
+    colorBy === 'priority'
+      ? Object.keys(priorities).map((value) => ({
+          value,
+          label: priorities[value].label,
+          ...priorityPins[value],
+        }))
+      : data.categories
+          .filter((value) => visible.some((r) => r.category === value))
+          .map((value) => ({ value, label: value, ...categoryPins[value] }));
+  return (
+    <>
+      <div className="map-switch" role="group" aria-label="Campus map view">
+        <button
+          type="button"
+          className="btn"
+          data-map-view="plan"
+          aria-pressed={view === 'plan'}
+          onClick={() => setView('plan')}
+        >
+          Campus plan
+        </button>
+        <button
+          type="button"
+          className="btn"
+          data-map-view="reports"
+          aria-pressed={view === 'reports'}
+          onClick={() => setView('reports')}
+        >
+          Report pins
+        </button>
+      </div>
+      {view === 'reports' && (
+        <>
+          <div className="map-filters" role="group" aria-label="Filter report pins">
+            <label>
+              Color pins by
+              <select
+                aria-label="Color pins by"
+                value={colorBy}
+                onChange={(e) => setColorBy(e.target.value)}
+              >
+                <option value="priority">Priority</option>
+                <option value="category">Primary category</option>
+              </select>
+            </label>
+            <label>
+              Category
+              <select
+                aria-label="Category"
+                value={category}
+                onChange={(e) => setCategory(e.target.value)}
+              >
+                <option value="">All categories</option>
+                <CategoryOptions />
+              </select>
+            </label>
+            <label>
+              Priority
+              <select
+                aria-label="Priority"
+                value={priority}
+                onChange={(e) => setPriority(e.target.value)}
+              >
+                <option value="">All priorities</option>
+                {Object.entries(priorities).map(([value, item]) => (
+                  <option key={value} value={value}>
+                    {item.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Status
+              <select
+                aria-label="Status"
+                value={status}
+                onChange={(e) => setStatus(e.target.value)}
+              >
+                <option value="">All statuses</option>
+                {Object.entries(statusLabels).map(([value, label]) => (
+                  <option key={value} value={value}>
+                    {label}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+          <div className="map-results">
+            <p className="map-caption" role="status">
+              {visible.length} of {reports.filter(hasMapPin).length} pinned concerns
+            </p>
+            {(category || priority || status) && (
+              <button
+                type="button"
+                className="btn link"
+                onClick={() => {
+                  setCategory('');
+                  setPriority('');
+                  setStatus('');
+                }}
+              >
+                Reset map filters
+              </button>
+            )}
+          </div>
+          {!visible.length && (
+            <p className="notice" role="status">
+              No pinned concerns match these filters.
+            </p>
+          )}
+        </>
+      )}
+      <ReportMap
+        reports={view === 'reports' ? visible : emptyReports}
+        large={large}
+        colorBy={colorBy}
+      />
+      {view === 'reports' && (
+        <div
+          className="map-legend"
+          aria-label={colorBy === 'priority' ? 'Priority legend' : 'Primary category legend'}
+        >
+          {legend.map((item) => (
+            <span key={item.value}>
+              <span
+                className="legend-symbol"
+                aria-hidden="true"
+                style={{ backgroundColor: item.color }}
+              >
+                {item.symbol}
+              </span>
+              {item.label}
+            </span>
+          ))}
+        </div>
+      )}
+      <p className="map-caption">
+        {view === 'plan'
+          ? 'Explore the MSU–IIT campus plan. Select Report pins to view IIT Voice concerns.'
+          : colorBy === 'category'
+            ? 'Pin colors and numbers show the primary category. Category filters include additional categories too. Select a pin for details.'
+            : 'Pin colors and letters show priority. Select a pin for status, categories and report details.'}
+      </p>
+    </>
+  );
 }

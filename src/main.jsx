@@ -4,4 +4,8 @@ import App from './App.jsx';
 import './styles.css';
 import 'leaflet/dist/leaflet.css';
 
-createRoot(document.getElementById('app')).render(<React.StrictMode><App /></React.StrictMode>);
+createRoot(document.getElementById('app')).render(
+  <React.StrictMode>
+    <App />
+  </React.StrictMode>
+);

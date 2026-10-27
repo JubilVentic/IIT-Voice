@@ -13,10 +13,13 @@
     "test": "node --test tests/*.test.js && python3 -B -m unittest discover -s tests -v",
     "pretest:browser": "npm run build",
     "test:browser": "node tests/browser-smoke.cjs",
-    "check": "npm run build"
+    "check": "npm run build",
+    "format": "prettier --write . && python3 -m ruff format .",
+    "format:check": "prettier --check . && python3 -m ruff format --check ."
   },
   "devDependencies": {
     "playwright": "1.62.1",
+    "prettier": "3.9.10",
     "vite": "^8.3.4"
   },
   "dependencies": {

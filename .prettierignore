@@ -1,0 +1,10 @@
+/node_modules/
+/dist/
+/data/
+/test-results/
+/src/assets/
+/.codex/
+/.agents/
+/.aws/
+/package-lock.json
+.env*
