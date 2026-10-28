@@ -807,7 +807,7 @@ table .btn {
   justify-content: flex-start;
   min-height: 720px;
   padding: 20px 0;
-  color: var(--maroon);
+  color: #4a1024;
 }
 
 .auth-campus-photo {
@@ -823,16 +823,32 @@ table .btn {
 }
 
 .auth-story .brand {
-  color: var(--maroon);
+  color: #4a1024;
 }
 
 .auth-story .brand small {
-  color: #8b6a1e;
+  color: var(--gold);
 }
 
 .auth-story-copy {
   margin-top: 64px;
   text-align: center;
+}
+
+@media (min-width: 901px) {
+  .auth-story {
+    position: relative;
+    justify-content: center;
+  }
+
+  .auth-story .brand {
+    position: absolute;
+    top: 20px;
+  }
+
+  .auth-story-copy {
+    margin-top: 0;
+  }
 }
 
 .auth-story h1 {
@@ -845,7 +861,7 @@ table .btn {
 
 .auth-story p {
   font-size: 15px;
-  color: var(--ink);
+  color: #21170e;
   max-width: 430px;
   line-height: 1.7;
   margin: 0 auto;
@@ -1370,6 +1386,31 @@ details {
   min-width: 0;
   max-width: 100%;
   text-overflow: ellipsis;
+}
+
+.auth-qr {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-top: 24px;
+  padding-top: 24px;
+  border-top: 1px solid var(--line);
+}
+
+.auth-qr img {
+  display: block;
+}
+
+.auth-qr > div {
+  min-width: 0;
+}
+
+.auth-qr .meta {
+  margin: 6px 0;
+}
+
+.auth-qr a {
+  font-size: 12px;
 }
 
 .demo-accounts {
@@ -2142,11 +2183,12 @@ input[type='file'] {
 
 .auth-story .brand span,
 .auth-story h1 span {
-  color: #8b6a1e;
+  color: var(--gold);
 }
 
-.auth-card {
-  border-top: 4px solid var(--gold);
+.auth-story h1 span {
+  -webkit-text-stroke: 0.4px #76500a;
+  text-shadow: 0 1px 2px #ffffffb3;
 }
 
 .auth-tabs {

@@ -59,6 +59,83 @@ class Client:
 
 
 class SchemaMigrationTests(unittest.TestCase):
+    def test_local_demo_startup_ignores_the_configured_cloud_database(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with (
+                patch.object(server, "DATABASE_URL", "postgresql://live-placeholder"),
+                patch.object(server, "DEMO_LOGIN", False),
+                patch.object(server, "DATA", server.DATA),
+                patch.object(server, "DB", server.DB),
+                patch.dict(os.environ, {"IIT_VOICE_DATA": directory}),
+                patch.object(sys, "argv", ["server.py", "--demo-login"]),
+                patch.object(server, "initialize") as initialize,
+                patch.object(server, "ensure_demo_accounts") as ensure,
+                patch.object(server, "ThreadingHTTPServer") as http,
+                patch("builtins.print"),
+            ):
+                server.main()
+                self.assertEqual(server.DATABASE_URL, "")
+                self.assertEqual(server.DB, Path(directory) / "iit-voice.sqlite3")
+                initialize.assert_called_once()
+                ensure.assert_called_once()
+                http.assert_called_once_with(("127.0.0.1", 8000), server.Handler)
+        with (
+            patch.object(server, "DATABASE_URL", "postgresql://live-placeholder"),
+            patch.object(server, "connect") as connect,
+        ):
+            with self.assertRaises(server.APIError):
+                server.ensure_demo_accounts()
+            connect.assert_not_called()
+
+    def test_demo_setup_adds_missing_accounts_without_overwriting_existing_data(self):
+        original_data, original_db = server.DATA, server.DB
+        with tempfile.TemporaryDirectory() as directory:
+            try:
+                server.DATA, server.DB = Path(directory), Path(directory) / "demo.sqlite3"
+                server.initialize()
+                uid = server.create_account(
+                    "student@iitvoice.local",
+                    "Existing account",
+                    "student",
+                    "existing-password-for-test",
+                    "Student",
+                )
+                with server.connect() as c:
+                    before = dict(c.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone())
+                    c.execute(
+                        "INSERT INTO reports(reporter_id,title,description,category,location,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",
+                        (
+                            uid,
+                            "Keep this report",
+                            "Existing report",
+                            "Safety",
+                            "Campus",
+                            server.now(),
+                            server.now(),
+                        ),
+                    )
+                server.ensure_demo_accounts()
+                server.ensure_demo_accounts()
+                with server.connect() as c:
+                    self.assertEqual(
+                        dict(c.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()), before
+                    )
+                    self.assertEqual(c.execute("SELECT count(*) FROM users").fetchone()[0], 6)
+                    self.assertEqual(
+                        c.execute("SELECT count(*) FROM users WHERE is_demo=1").fetchone()[0], 5
+                    )
+                    self.assertEqual(
+                        c.execute("SELECT title FROM reports").fetchone()[0], "Keep this report"
+                    )
+                    self.assertEqual(
+                        c.execute(
+                            "SELECT count(*) FROM users WHERE role='office' AND office_id IS NOT NULL"
+                        ).fetchone()[0],
+                        2,
+                    )
+            finally:
+                server.DATA, server.DB = original_data, original_db
+
     def test_role_upgrade_preserves_accounts_passwords_sessions_and_report_references(self):
         original_data, original_db = server.DATA, server.DB
         with tempfile.TemporaryDirectory() as directory:
@@ -191,6 +268,9 @@ class SystemTests(unittest.TestCase):
         demo_patch = patch("server.DEMO_LOGIN", False)
         demo_patch.start()
         self.addCleanup(demo_patch.stop)
+        online_patch = patch("server.DEMO_DATABASE_URL", "")
+        online_patch.start()
+        self.addCleanup(online_patch.stop)
         self.ai_patch = patch(
             "server.suggest_category",
             return_value={
@@ -1316,6 +1396,123 @@ class SystemTests(unittest.TestCase):
         )
         self.assertEqual(Client(self.base).request("/server.py")[0], 404)
         self.assertEqual(Client(self.base).request("/")[0], 200)
+
+
+class OnlineDemoIsolationTests(unittest.TestCase):
+    def test_online_demo_sessions_never_read_or_write_regular_tables(self):
+        original_data, original_db = server.DATA, server.DB
+        with tempfile.TemporaryDirectory() as directory:
+            paths = {
+                False: Path(directory) / "regular.sqlite3",
+                True: Path(directory) / "demo.sqlite3",
+            }
+            try:
+                for demo, database in paths.items():
+                    server.DATA, server.DB = Path(directory), database
+                    server.initialize()
+                    uid = server.create_account(
+                        "demo@test.local" if demo else "regular@test.local",
+                        "Demo Admin" if demo else "Regular Admin",
+                        "admin",
+                        "test-password-for-iit-voice",
+                        demo=demo,
+                    )
+                    with server.connect() as c:
+                        c.execute(
+                            "INSERT INTO reports(reporter_id,title,description,category,location,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",
+                            (
+                                uid,
+                                "Demo concern" if demo else "Regular private concern",
+                                "Private description",
+                                server.CATEGORIES[0],
+                                "Campus",
+                                server.now(),
+                                server.now(),
+                            ),
+                        )
+
+                def choose(online_demo=False):
+                    c = server.sqlite3.connect(
+                        paths[online_demo], factory=server.DatabaseConnection
+                    )
+                    c.row_factory = server.sqlite3.Row
+                    c.execute("PRAGMA foreign_keys=ON")
+                    return c
+
+                with (
+                    patch.object(server, "connect", side_effect=choose),
+                    patch.object(server, "DATABASE_URL", "configured-regular"),
+                    patch.object(server, "DEMO_DATABASE_URL", "configured-demo"),
+                ):
+                    http = server.ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
+                    thread = threading.Thread(target=http.serve_forever, daemon=True)
+                    thread.start()
+                    try:
+                        base = "http://127.0.0.1:" + str(http.server_port)
+                        regular, demo = Client(base), Client(base)
+                        regular.login("regular@test.local")
+                        self.assertEqual(
+                            regular.request("/api/bootstrap")[1]["reports"][0]["title"],
+                            "Regular private concern",
+                        )
+                        accounts = demo.request("/api/demo/accounts")[1]
+                        self.assertEqual(accounts["mode"], "online")
+                        code, session = demo.request(
+                            "/api/demo/login", "POST", {"account_id": accounts["accounts"][0]["id"]}
+                        )
+                        self.assertEqual(code, 200)
+                        self.assertEqual(session["user"]["name"], "Demo Admin")
+                        demo.csrf = session["csrf"]
+                        jar = next(
+                            h.cookiejar
+                            for h in demo.opener.handlers
+                            if isinstance(h, HTTPCookieProcessor)
+                        )
+                        token = next(iter(jar)).value
+                        self.assertTrue(token.startswith("demo."))
+                        snapshot = demo.request("/api/bootstrap")[1]
+                        self.assertEqual(snapshot["demo_mode"], "online")
+                        self.assertEqual(
+                            [r["title"] for r in snapshot["reports"]], ["Demo concern"]
+                        )
+                        self.assertEqual(demo.request("/api/reports/1")[1]["title"], "Demo concern")
+                        self.assertEqual(
+                            demo.request(
+                                "/api/reports",
+                                "POST",
+                                {
+                                    "title": "Created through demo",
+                                    "description": "Only the demo database should change.",
+                                    "category": server.CATEGORIES[0],
+                                    "location": "Demo campus",
+                                },
+                            )[0],
+                            201,
+                        )
+                        self.assertEqual(len(regular.request("/api/bootstrap")[1]["reports"]), 1)
+                        self.assertEqual(
+                            demo.request(
+                                "/api/me",
+                                extra_headers={
+                                    "Cookie": "iit_session=" + token.removeprefix("demo.")
+                                },
+                            )[0],
+                            401,
+                        )
+                        with patch.object(server, "DEMO_DATABASE_URL", ""):
+                            self.assertEqual(demo.request("/api/me")[0], 401)
+                        # Normal sign-in always targets regular accounts, even with a demo cookie.
+                        self.assertEqual(demo.login("regular@test.local")["name"], "Regular Admin")
+                        self.assertEqual(
+                            demo.request("/api/bootstrap")[1]["reports"][0]["title"],
+                            "Regular private concern",
+                        )
+                    finally:
+                        http.shutdown()
+                        http.server_close()
+                        thread.join()
+            finally:
+                server.DATA, server.DB = original_data, original_db
 
 
 if __name__ == "__main__":

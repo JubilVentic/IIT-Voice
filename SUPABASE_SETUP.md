@@ -61,6 +61,8 @@ Push the integration files and redeploy after saving the environment variables. 
 
 Evidence photos remain private database records (`BYTEA`) in this first version, accessed through the authenticated API. Supabase Storage can be introduced later if evidence volume calls for it; no public bucket is required now.
 
+Optional online demo accounts can share this Supabase project using the separate `iit_voice_demo` schema and restricted database role. Follow [DEMO_AND_QR_GUIDE.md](DEMO_AND_QR_GUIDE.md) to prepare the schema and configure the server-only `DEMO_DATABASE_URL` on the existing Vercel site.
+
 ## Verification
 
 The normal unit and browser tests always use disposable SQLite even if `.env.local` contains a cloud connection. They never seed, clear or reset the Supabase project. A live Supabase connection and deployed Vercel routing must be checked separately after configuration.

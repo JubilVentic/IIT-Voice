@@ -7,7 +7,7 @@ import server
 
 class handler(server.Handler):
     def demo_enabled(self):
-        return False
+        return self.online_demo_enabled()
 
     def dispatch(self, method):
         if not server.DATABASE_URL:

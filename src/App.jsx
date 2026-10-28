@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import campusPhoto from './assets/msu-iit-campus.png';
+import systemQr from './assets/iit-voice-qr.svg';
+import systemQrPng from './assets/iit-voice-qr.png';
 import { VoiceContext, labels, useAction, useVoice, formValues } from './lib.js';
 import { Brand, Dialog, ErrorMessage, Field, Icon } from './components/UI.jsx';
 import {
@@ -15,12 +17,16 @@ import { NewReport, ReportDetails } from './pages/ReportForms.jsx';
 
 function Auth({ signIn, api, toast }) {
   const [register, setRegister] = useState(false),
-    [demoAccounts, setDemoAccounts] = useState([]);
+    [demoAccounts, setDemoAccounts] = useState([]),
+    [demoMode, setDemoMode] = useState('local');
   useEffect(() => {
     let alive = true;
     api('/api/demo/accounts')
       .then((result) => {
-        if (alive) setDemoAccounts(result.accounts);
+        if (alive) {
+          setDemoAccounts(result.accounts);
+          setDemoMode(result.mode || 'local');
+        }
       })
       .catch(() => {});
     return () => {
@@ -136,7 +142,11 @@ function Auth({ signIn, api, toast }) {
           {!register && demoAccounts.length > 0 && (
             <section className="demo-accounts" aria-label="Demo accounts">
               <h3>Try a demo account</h3>
-              <p className="meta">One-click access for local testing.</p>
+              <p className="meta">
+                {demoMode === 'online'
+                  ? 'Shared demo workspace. Use test information only; regular accounts and reports are separate.'
+                  : 'One-click access with isolated local test data.'}
+              </p>
               <div className="demo-grid">
                 {demoAccounts.map((account) => (
                   <button
@@ -157,6 +167,25 @@ function Auth({ signIn, api, toast }) {
                     <span>{account.name} →</span>
                   </button>
                 ))}
+              </div>
+            </section>
+          )}
+          {!register && (
+            <section className="auth-qr" aria-label="Open IIT Voice on your phone">
+              <a href="https://iit-voice.vercel.app/" target="_blank" rel="noreferrer">
+                <img
+                  src={systemQr}
+                  width="112"
+                  height="112"
+                  alt="QR code linking to https://iit-voice.vercel.app/"
+                />
+              </a>
+              <div>
+                <h3>Open on your phone</h3>
+                <p className="meta">Scan to visit the live IIT Voice site.</p>
+                <a href={systemQrPng} download="iit-voice-qr.png">
+                  Download QR code
+                </a>
               </div>
             </section>
           )}
@@ -326,7 +355,15 @@ function Shell({ children, logout }) {
             </nav>
           </details>
         </div>
-        <main id="main">{children}</main>
+        <main id="main">
+          {data.demo_mode === 'online' && (
+            <div className="notice" role="status">
+              Demo workspace · Shared test data only. Your changes do not affect regular IIT Voice
+              records.
+            </div>
+          )}
+          {children}
+        </main>
         <footer className="footer">
           <span>MSU–IIT · IIT Voice</span>
           <span>Campus reporting pilot · Philippine time</span>

@@ -7,10 +7,56 @@ from unittest.mock import Mock, patch
 
 import server
 from api.index import handler
-from database import PostgresConnection, insert_id
+from database import DEMO_ROLE, DEMO_SCHEMA, PostgresConnection, connect_postgres, insert_id
+from setup_online_demo import demo_migration, demo_url
 
 
 class DatabaseTests(unittest.TestCase):
+    def test_demo_connection_requires_a_role_that_cannot_access_regular_data(self):
+        import psycopg
+
+        role = {
+            "name": DEMO_ROLE,
+            "rolsuper": False,
+            "rolcreatedb": False,
+            "rolcreaterole": False,
+            "rolreplication": False,
+            "rolbypassrls": False,
+            "live_access": False,
+            "memberships": False,
+        }
+        raw = Mock()
+        raw.execute.return_value.fetchone.return_value = role
+        with patch.object(psycopg, "connect", return_value=raw):
+            connection = connect_postgres("postgresql://demo-placeholder", DEMO_SCHEMA)
+            self.assertEqual(connection.schema, DEMO_SCHEMA)
+            for invalid in (
+                {**role, "name": "postgres"},
+                {**role, "live_access": True},
+                {**role, "memberships": True},
+                {**role, "rolcreaterole": True},
+            ):
+                raw.execute.return_value.fetchone.return_value = invalid
+                with self.assertRaises(RuntimeError):
+                    connect_postgres("postgresql://demo-placeholder", DEMO_SCHEMA)
+                raw.close.assert_called()
+        with self.assertRaises(ValueError):
+            PostgresConnection(raw, Mock(), "iit_voice; DROP SCHEMA public")
+
+    def test_demo_setup_targets_only_the_separate_schema(self):
+        migration = demo_migration()
+        self.assertIn("SET LOCAL search_path TO iit_voice_demo", migration)
+        self.assertNotIn("TO iit_voice;", migration)
+        self.assertNotIn("BEGIN;", migration)
+        self.assertNotIn("COMMIT;", migration)
+        self.assertEqual(
+            demo_url(
+                "postgresql://postgres.example:unused@pooler.example:6543/postgres?sslmode=require",
+                "a+b@c",
+            ),
+            "postgresql://iit_voice_demo_app.example:a%2Bb%40c@pooler.example:6543/postgres?sslmode=require",
+        )
+
     def test_bound_parameters_and_schema_are_restored_after_each_commit(self):
         raw = Mock()
         raw.info.transaction_status = 0
@@ -64,7 +110,13 @@ class DatabaseTests(unittest.TestCase):
         with patch.object(server, "DATABASE_URL", ""):
             request.dispatch("GET")
         self.assertEqual(request.send.call_args.args[0], 503)
-        self.assertFalse(request.demo_enabled())
+        with patch.object(server, "DEMO_DATABASE_URL", ""):
+            self.assertFalse(request.demo_enabled())
+        with (
+            patch.object(server, "DATABASE_URL", "regular"),
+            patch.object(server, "DEMO_DATABASE_URL", "demo"),
+        ):
+            self.assertTrue(request.demo_enabled())
         with (
             patch.object(server, "DATABASE_URL", "configured"),
             patch.object(server.Handler, "dispatch") as dispatch,

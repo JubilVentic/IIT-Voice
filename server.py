@@ -19,7 +19,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
 from dotenv import load_dotenv
-from database import connect_postgres, insert_id
+from database import DEMO_SCHEMA, connect_postgres, insert_id
 from photo_analysis import prepare_photo, suggest_category, assess_completion
 from report_categories import (
     CATEGORIES,
@@ -31,9 +31,11 @@ from report_categories import (
 
 ROOT = Path(__file__).resolve().parent
 load_dotenv(ROOT / ".env.local", override=False)
+load_dotenv(ROOT / ".env.demo.local", override=False)
 DATA = Path(os.environ.get("IIT_VOICE_DATA", str(ROOT / "data")))
 DB = DATA / "iit-voice.sqlite3"
 DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
+DEMO_DATABASE_URL = os.environ.get("DEMO_DATABASE_URL", "").strip()
 ROLES = ("student", "validator", "admin", "office")
 STATUSES = (
     "submitted",
@@ -72,7 +74,11 @@ class DatabaseConnection(sqlite3.Connection):
             self.close()
 
 
-def connect():
+def connect(online_demo=False):
+    if online_demo:
+        if not DEMO_DATABASE_URL:
+            raise RuntimeError("Online demo database is not configured.")
+        return connect_postgres(DEMO_DATABASE_URL, DEMO_SCHEMA)
     if DATABASE_URL:
         return connect_postgres(DATABASE_URL)
     c = sqlite3.connect(DB, timeout=15, factory=DatabaseConnection)
@@ -659,12 +665,7 @@ class Handler(BaseHTTPRequestHandler):
             raise APIError(400, "Invalid JSON request.")
 
     def authenticate(self, c, write=False):
-        cookie = SimpleCookie()
-        try:
-            cookie.load(self.headers.get("Cookie", ""))
-        except Exception:
-            raise APIError(401, "Sign in to continue.")
-        token = cookie["iit_session"].value if "iit_session" in cookie else ""
+        token = self.session_token()
         hashed = hashlib.sha256(token.encode()).hexdigest()
         session = c.execute(
             "SELECT * FROM sessions WHERE token_hash=? AND expires>?", (hashed, time.time())
@@ -681,6 +682,28 @@ class Handler(BaseHTTPRequestHandler):
                 403,
             )
         return u, session
+
+    def session_token(self):
+        cookie = SimpleCookie()
+        try:
+            cookie.load(self.headers.get("Cookie", ""))
+        except Exception:
+            raise APIError(401, "Sign in to continue.")
+        return cookie["iit_session"].value if "iit_session" in cookie else ""
+
+    def online_demo_enabled(self):
+        # Local demo mode deliberately has no cloud DATABASE_URL.
+        return bool(DATABASE_URL and DEMO_DATABASE_URL)
+
+    def uses_online_demo(self, path):
+        if path in ("/api/login", "/api/register"):
+            return False
+        if path in ("/api/demo/accounts", "/api/demo/login"):
+            return self.online_demo_enabled()
+        if self.session_token().startswith("demo."):
+            check(self.online_demo_enabled(), "Demo session unavailable. Sign in again.", 401)
+            return True
+        return False
 
     def cookie(self, token, age=43200):
         return "iit_session=%s; Path=/; HttpOnly; SameSite=Strict; Max-Age=%s%s" % (
@@ -700,6 +723,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def dispatch(self, method):
         self._db = None
+        self._online_demo = False
         try:
             path = urlsplit(self.path).path
             if path == "/api/health" and method == "GET":
@@ -720,7 +744,9 @@ class Handler(BaseHTTPRequestHandler):
                 )
                 self.send(200, f.read_bytes(), mimetypes.guess_type(str(f))[0] or "text/plain")
                 return
-            with connect() as c:
+            self._online_demo = self.uses_online_demo(path)
+            connection = connect(online_demo=True) if self._online_demo else connect()
+            with connection as c:
                 self._db = c
                 self.api(c, method, path)
         except APIError as e:
@@ -734,6 +760,8 @@ class Handler(BaseHTTPRequestHandler):
             self._db = None
 
     def demo_enabled(self):
+        if self.online_demo_enabled():
+            return True
         hostname = urlsplit("http://" + self.headers.get("Host", "")).hostname
         return (
             DEMO_LOGIN
@@ -752,6 +780,8 @@ class Handler(BaseHTTPRequestHandler):
             u["active"] and u["verified"], "Your account is pending verification or inactive.", 403
         )
         token, csrf = secrets.token_urlsafe(32), secrets.token_urlsafe(24)
+        if self._online_demo:
+            token = "demo." + token
         c.execute("DELETE FROM sessions WHERE expires<?", (time.time(),))
         c.execute(
             "INSERT INTO sessions VALUES(?,?,?,?)",
@@ -773,10 +803,13 @@ class Handler(BaseHTTPRequestHandler):
                 if self.demo_enabled()
                 else []
             )
-            self.send(200, {"accounts": accounts})
+            result = {"accounts": accounts}
+            if accounts:
+                result["mode"] = "online" if self._online_demo else "local"
+            self.send(200, result)
             return
         if path == "/api/demo/login" and method == "POST":
-            check(self.demo_enabled(), "Demo sign-in is only available in local demo mode.", 403)
+            check(self.demo_enabled(), "Demo sign-in is unavailable.", 403)
             origin = self.headers.get("Origin")
             check(
                 not origin or urlsplit(origin).netloc == self.headers.get("Host"),
@@ -890,6 +923,9 @@ class Handler(BaseHTTPRequestHandler):
             self.send(
                 200,
                 {
+                    "demo_mode": "online"
+                    if self._online_demo
+                    else ("local" if DEMO_LOGIN else None),
                     "reports": reports,
                     "offices": offices,
                     "routing": routing,
@@ -1529,10 +1565,12 @@ class Handler(BaseHTTPRequestHandler):
         raise APIError(404, "Endpoint not found.")
 
 
-def create_account(email, name, role, password, affiliation="Staff", demo=False, office_id=None):
+def create_account(
+    email, name, role, password, affiliation="Staff", demo=False, office_id=None, connect_db=None
+):
     check(role in ROLES, "Invalid role.")
     check(len(password) >= 12, "Use a password of at least 12 characters.")
-    with connect() as c:
+    with (connect_db or connect)() as c:
         check(
             role != "office"
             or (
@@ -1554,8 +1592,41 @@ def create_account(email, name, role, password, affiliation="Staff", demo=False,
         return uid
 
 
-def ensure_office_demos(password=None):
-    with connect() as c:
+def ensure_demo_accounts(connect_db=None):
+    """Add missing sample identities without changing existing accounts or reports."""
+    check(
+        not DATABASE_URL or connect_db is not None,
+        "Demo accounts require an isolated demo database.",
+    )
+    factory = connect_db or connect
+    with factory() as c:
+        check(
+            getattr(c, "schema", None) in (None, DEMO_SCHEMA),
+            "Cannot seed regular Postgres tables.",
+        )
+    for email, name, role, affiliation in (
+        ("admin@iitvoice.local", "Morgan Lee", "admin", "Staff"),
+        ("validator@iitvoice.local", "Sam Cruz", "validator", "Staff"),
+        ("student@iitvoice.local", "Alex Reyes", "student", "Student"),
+        ("faculty@iitvoice.local", "Jamie Santos", "student", "Faculty"),
+    ):
+        with factory() as c:
+            exists = c.execute("SELECT 1 FROM users WHERE email=?", (email,)).fetchone()
+        if not exists:
+            create_account(
+                email,
+                name,
+                role,
+                secrets.token_urlsafe(24),
+                affiliation,
+                demo=True,
+                connect_db=factory,
+            )
+    ensure_office_demos(connect_db=factory)
+
+
+def ensure_office_demos(password=None, connect_db=None):
+    with (connect_db or connect)() as c:
         if not c.execute(
             "SELECT 1 FROM users WHERE is_demo=1 AND email='admin@iitvoice.local'"
         ).fetchone():
@@ -1716,7 +1787,7 @@ def seed_demo():
 
 
 def main():
-    global DEMO_LOGIN
+    global DEMO_LOGIN, DATABASE_URL, DATA, DB
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
@@ -1736,6 +1807,11 @@ def main():
         parser.error(
             "Demo sign-in requires a loopback host. Disable IIT_VOICE_DEMO_LOGIN for public hosting."
         )
+    if DEMO_LOGIN and not (args.init_db or args.create_admin or args.seed_demo):
+        # Demo sessions must never grant access to the configured live Supabase database.
+        DATABASE_URL = ""
+        DATA = Path(os.environ.get("IIT_VOICE_DATA", str(ROOT / "data" / "demo")))
+        DB = DATA / "iit-voice.sqlite3"
     initialize()
     if args.init_db:
         print("Database initialized: " + ("Supabase Postgres" if DATABASE_URL else "local SQLite"))
@@ -1755,7 +1831,7 @@ def main():
         print("Main Admin created.")
         return
     if DEMO_LOGIN:
-        ensure_office_demos()
+        ensure_demo_accounts()
     print("IIT Voice running at http://%s:%s" % (args.host, args.port))
     ThreadingHTTPServer((args.host, args.port), Handler).serve_forever()
 
