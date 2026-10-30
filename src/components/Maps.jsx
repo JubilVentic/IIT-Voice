@@ -187,6 +187,8 @@ export function ReportMap({
       });
     let fitted = false;
     const observer = new ResizeObserver(() => {
+      // A hidden wizard step has no size; preserve the map view until it is visible again.
+      if (!container.current?.clientWidth || !container.current?.clientHeight) return;
       map.invalidateSize();
       if (
         (!fitted || callbacks.current.fitCampusOnResize) &&

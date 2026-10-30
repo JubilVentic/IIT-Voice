@@ -2913,3 +2913,80 @@ input[type='file'] {
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+.report-progress {
+  display: flex;
+  gap: 16px;
+  list-style: none;
+  padding: 0;
+  margin: 20px 0 24px;
+}
+
+.report-progress li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.report-progress li > span {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+}
+
+.report-progress [aria-current='step'] {
+  color: var(--maroon);
+  font-weight: 650;
+}
+
+.report-progress [aria-current='step'] > span {
+  background: var(--maroon);
+  color: white;
+  border-color: var(--maroon);
+}
+
+.report-progress .is-complete > span {
+  border-color: var(--gold);
+  color: var(--maroon);
+  background: #fbf5e5;
+}
+
+.report-step[hidden] {
+  display: none;
+}
+
+.report-step-actions {
+  margin-top: 22px;
+}
+
+.report-location-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 12px 0 20px;
+  font-weight: 600;
+}
+
+.report-cancel {
+  margin-top: 14px;
+}
+
+@media (max-width: 700px) {
+  .report-progress {
+    gap: 8px;
+  }
+  .report-progress li {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 5px;
+  }
+}

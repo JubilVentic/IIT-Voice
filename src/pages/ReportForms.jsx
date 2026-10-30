@@ -22,6 +22,8 @@ import { PhotoAssist, CompletionCheck } from '../components/PhotoAssist.jsx';
 
 export function NewReport() {
   const { user, data, api, refresh, toast, openReport, closeModal } = useVoice();
+  const [step, setStep] = useState(0);
+  const heading = useRef(null);
   const [pin, setPin] = useState(null),
     [indoor, setIndoor] = useState(null),
     [location, setLocation] = useState(''),
@@ -36,6 +38,18 @@ export function NewReport() {
     photoAssist = useRef(null);
   const [photoError, setPhotoError] = useState('');
   const descriptionEdited = photoAnalysis && description !== (photoAnalysis.description || '');
+  const photoBlocked = photoAnalysis?.screening?.status === 'rejected';
+  const validPin = Boolean(pin) && (!indoor || hasIndoorPoint(indoor));
+  const stepTitles = ['Where is the concern?', 'Add evidence', 'Describe the concern'];
+  useEffect(() => {
+    heading.current?.closest('dialog')?.scrollTo({ top: 0 });
+    heading.current?.focus({ preventScroll: true });
+  }, [step]);
+  function clearPin() {
+    setPin(null);
+    setIndoor(null);
+    setLocation('');
+  }
   function applyPhotoAnalysis(result) {
     setPhotoAnalysis(result);
     if (result?.description) {
@@ -62,6 +76,7 @@ export function NewReport() {
   }
   function submit(e) {
     e.preventDefault();
+    if (step !== 2 || !e.currentTarget.reportValidity()) return;
     const values = formValues(e.currentTarget);
     action.run(async () => {
       if (photoBusy || photoAnalysis?.screening?.status === 'rejected')
@@ -104,185 +119,260 @@ export function NewReport() {
   }
   return (
     <>
-      <div className="eyebrow">NEW CAMPUS CONCERN</div>
-      <h2 id="modal-title">What needs attention?</h2>
+      <div className="eyebrow">NEW CAMPUS CONCERN · STEP {step + 1} OF 3</div>
+      <h2 id="modal-title" ref={heading} tabIndex={-1}>
+        {stepTitles[step]}
+      </h2>
       <p className="muted">
         Your submission stays private until reviewed. Evidence stays restricted.
       </p>
-      <form id="report-form" onSubmit={submit}>
-        <div className="form-grid">
-          <Field label="Title">
-            <input
-              name="title"
-              required
-              minLength={5}
-              maxLength={150}
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-              placeholder="e.g. Broken walkway light"
-            />
-          </Field>
-          <CategoryFields
-            analysis={photoAnalysis}
-            disabled={photoBusy}
-            primary={category}
-            categories={categories}
-            onChange={(primary, selected) => {
-              setCategory(primary);
-              setCategories(selected);
+      <ol className="report-progress" aria-label="Report progress">
+        {['Location', 'Evidence photo', 'Report details'].map((label, index) => (
+          <li
+            key={label}
+            aria-current={step === index ? 'step' : undefined}
+            className={index < step ? 'is-complete' : ''}
+          >
+            <span aria-hidden="true">{index + 1}</span>
+            {label}
+          </li>
+        ))}
+      </ol>
+      <form id="report-form" noValidate onSubmit={submit}>
+        <section className="report-step" hidden={step !== 0} aria-label="Choose location">
+          <p className="meta">
+            Tap a building to select it, or place an outdoor pin. Drag the pin to refine its
+            position.
+          </p>
+          <ReportLocationPicker
+            pin={pin}
+            indoor={indoor}
+            onPick={(point) => {
+              if (step === 0) pickLocation(point);
+            }}
+            onComplete={() => setStep((current) => (current === 0 ? 1 : current))}
+          />
+          <p id="pin-label" className="map-caption">
+            {pin
+              ? `Selected: ${pin.latitude.toFixed(5)}, ${pin.longitude.toFixed(5)}`
+              : 'No pin selected.'}
+          </p>
+          <button type="button" className="btn link" id="clear-pin" onClick={clearPin}>
+            Clear pin
+          </button>
+          <details>
+            <summary>Check for existing approved concerns</summary>
+            <ReportList reports={campusReports(data.reports).slice(0, 6)} />
+          </details>
+
+          <div className="actions report-step-actions">
+            <button
+              type="button"
+              className="btn solid"
+              disabled={!validPin}
+              onClick={() => setStep(1)}
+            >
+              Continue to evidence
+            </button>
+            <button
+              type="button"
+              className="btn link"
+              onClick={() => {
+                clearPin();
+                setStep(1);
+              }}
+            >
+              Continue without a pin
+            </button>
+          </div>
+        </section>
+        <section className="report-step" hidden={step !== 1} aria-label="Add evidence photo">
+          <p className="report-location-summary">
+            {location || 'No map pin selected. You can enter a location in the final step.'}
+          </p>
+          <p className="meta">
+            Add a photo of the concern. After screening, review its suggested title, categories, and
+            description in the next step. You can also continue without a photo.
+          </p>
+          <PhotoAssist
+            ref={photoAssist}
+            onAnalysis={applyPhotoAnalysis}
+            onBusyChange={setPhotoBusy}
+            onErrorChange={setPhotoError}
+            onGeotag={(point) => {
+              if (!indoor) pickLocation(point);
             }}
           />
-          <Field
-            label="Campus location"
-            help={
-              indoor
-                ? 'Filled from the building, floor, and mapped area under your pin. Add corrections in Location details.'
-                : 'Filled from your pin. Edit the building name if needed.'
-            }
-          >
-            <input
-              name="location"
-              required
-              minLength={3}
-              maxLength={200}
-              value={location}
-              onChange={(e) => setLocation(e.target.value)}
-              placeholder="Select a pin or enter a campus location"
-            />
-          </Field>
-          <Field label="Location details (optional)" help="Visible to you and the review team.">
-            <input
-              name="location_details"
-              maxLength={500}
-              placeholder="e.g. 2nd floor, Room 204, beside the stairs"
-            />
-          </Field>
-          {user.role !== 'student' && (
-            <Field label="Suggested priority">
-              <select name="priority">
-                <option value="normal">Normal</option>
-                <option value="low">Low</option>
-                <option value="high">High</option>
-                <option value="urgent">Urgent</option>
-              </select>
+
+          <div className="actions report-step-actions">
+            <button type="button" className="btn" onClick={() => setStep(0)}>
+              Back to location
+            </button>
+            <button
+              type="button"
+              className="btn solid"
+              disabled={photoBusy || photoBlocked}
+              onClick={() => setStep(2)}
+            >
+              {photoBusy ? 'Checking photo…' : 'Continue to report details'}
+            </button>
+          </div>
+        </section>
+        <section className="report-step" hidden={step !== 2} aria-label="Review report details">
+          <div className="report-location-summary">
+            <span>{location || 'Enter the campus location below.'}</span>
+            <button type="button" className="btn link" onClick={() => setStep(0)}>
+              Change location
+            </button>
+          </div>
+          <div className="form-grid">
+            <Field label="Title">
+              <input
+                name="title"
+                required
+                minLength={5}
+                maxLength={150}
+                value={title}
+                onChange={(e) => setTitle(e.target.value)}
+                placeholder="e.g. Broken walkway light"
+              />
             </Field>
-          )}
-        </div>
-        <div className="field description-editor">
-          <div className="description-heading">
-            <label htmlFor="report-description">Describe what you observed</label>
-            {descriptionEdited && (
-              <span id="description-recheck">
-                <button
-                  type="button"
-                  className="btn solid"
-                  disabled={photoBusy || !photoAnalysis.ai_available}
-                  onClick={() => photoAssist.current?.recheck()}
-                >
-                  {photoBusy ? 'Checking photo…' : 'Check photo again'}
-                </button>
-              </span>
+            <CategoryFields
+              analysis={photoAnalysis}
+              disabled={photoBusy}
+              primary={category}
+              categories={categories}
+              onChange={(primary, selected) => {
+                setCategory(primary);
+                setCategories(selected);
+              }}
+            />
+            <Field
+              label="Campus location"
+              help={
+                indoor
+                  ? 'Filled from the building, floor, and mapped area under your pin. Add corrections in Location details.'
+                  : 'Filled from your pin. Edit the building name if needed.'
+              }
+            >
+              <input
+                name="location"
+                required
+                minLength={3}
+                maxLength={200}
+                value={location}
+                onChange={(e) => setLocation(e.target.value)}
+                placeholder="Select a pin or enter a campus location"
+              />
+            </Field>
+            <Field label="Location details (optional)" help="Visible to you and the review team.">
+              <input
+                name="location_details"
+                maxLength={500}
+                placeholder="e.g. 2nd floor, Room 204, beside the stairs"
+              />
+            </Field>
+            {user.role !== 'student' && (
+              <Field label="Suggested priority">
+                <select name="priority">
+                  <option value="normal">Normal</option>
+                  <option value="low">Low</option>
+                  <option value="high">High</option>
+                  <option value="urgent">Urgent</option>
+                </select>
+              </Field>
             )}
           </div>
-          <textarea
-            id="report-description"
-            name="description"
-            aria-describedby="description-help"
-            value={description}
-            onChange={(e) => setDescription(e.target.value)}
-            required
-            minLength={10}
-            maxLength={5000}
-            placeholder="What happened? When did you observe it?"
-          />
-          <small id="description-help">
-            {descriptionEdited
-              ? 'Your description was edited. Rechecking analyzes the photo only and keeps your wording.'
-              : 'AI can draft this from your photo. Review and edit it, and add when you observed the concern.'}
-          </small>
-          {descriptionEdited && (
-            <>
-              <p className="meta" role="status">
-                {photoBusy
-                  ? 'Rechecking the photo. Your description will stay unchanged.'
-                  : !photoAnalysis.ai_available
-                    ? 'Gemini is not configured. You can edit the report manually.'
-                    : ''}
-              </p>
-              <ErrorMessage>{photoError}</ErrorMessage>
-            </>
+          <div className="field description-editor">
+            <div className="description-heading">
+              <label htmlFor="report-description">Describe what you observed</label>
+              {descriptionEdited && (
+                <span id="description-recheck">
+                  <button
+                    type="button"
+                    className="btn solid"
+                    disabled={photoBusy || !photoAnalysis.ai_available}
+                    onClick={() => photoAssist.current?.recheck()}
+                  >
+                    {photoBusy ? 'Checking photo…' : 'Check photo again'}
+                  </button>
+                </span>
+              )}
+            </div>
+            <textarea
+              id="report-description"
+              name="description"
+              aria-describedby="description-help"
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              required
+              minLength={10}
+              maxLength={5000}
+              placeholder="What happened? When did you observe it?"
+            />
+            <small id="description-help">
+              {descriptionEdited
+                ? 'Your description was edited. Rechecking analyzes the photo only and keeps your wording.'
+                : 'AI can draft this from your photo. Review and edit it, and add when you observed the concern.'}
+            </small>
+            {descriptionEdited && (
+              <>
+                <p className="meta" role="status">
+                  {photoBusy
+                    ? 'Rechecking the photo. Your description will stay unchanged.'
+                    : !photoAnalysis.ai_available
+                      ? 'Gemini is not configured. You can edit the report manually.'
+                      : ''}
+                </p>
+                <ErrorMessage>{photoError}</ErrorMessage>
+              </>
+            )}
+          </div>
+          {photoAnalysis?.description && description !== photoAnalysis.description && (
+            <button
+              type="button"
+              className="btn link"
+              onClick={() => {
+                setDescription(photoAnalysis.description);
+                previousDraft.current = photoAnalysis.description;
+              }}
+            >
+              Use AI description draft
+            </button>
           )}
-        </div>
-        {photoAnalysis?.description && description !== photoAnalysis.description && (
-          <button
-            type="button"
-            className="btn link"
-            onClick={() => {
-              setDescription(photoAnalysis.description);
-              previousDraft.current = photoAnalysis.description;
-            }}
-          >
-            Use AI description draft
-          </button>
-        )}
-        <PhotoAssist
-          ref={photoAssist}
-          onAnalysis={applyPhotoAnalysis}
-          onBusyChange={setPhotoBusy}
-          onErrorChange={setPhotoError}
-          onGeotag={(point) => {
-            if (!indoor) pickLocation(point);
-          }}
-        />
-        <h3>Pin the location (optional)</h3>
-        <p className="meta">
-          Tap a building to select it, or place an outdoor pin. Drag the pin to refine its position.
-        </p>
-        <ReportLocationPicker pin={pin} indoor={indoor} onPick={pickLocation} />
-        <p id="pin-label" className="map-caption">
-          {pin
-            ? `Selected: ${pin.latitude.toFixed(5)}, ${pin.longitude.toFixed(5)}`
-            : 'No pin selected.'}
-        </p>
-        <button
-          type="button"
-          className="btn link"
-          id="clear-pin"
-          onClick={() => {
-            setPin(null);
-            setIndoor(null);
-            setLocation('');
-          }}
-        >
-          Clear pin
-        </button>
-        <details>
-          <summary>Check for existing approved concerns</summary>
-          <ReportList reports={campusReports(data.reports).slice(0, 6)} />
-        </details>
-        <div className="notice">
-          Immediate danger? Use the campus emergency channel directly. An urgent label does not
-          replace emergency response.
-        </div>
+
+          <div className="notice">
+            Immediate danger? Use the campus emergency channel directly. An urgent label does not
+            replace emergency response.
+          </div>
+          {photoBlocked && (
+            <p className="inline-error" role="alert">
+              This photo was blocked. Go back to evidence to remove or replace it before submitting.
+            </p>
+          )}
+          <div className="actions report-step-actions">
+            <button type="button" className="btn" disabled={action.busy} onClick={() => setStep(1)}>
+              Back to evidence
+            </button>
+            <button
+              className="btn solid"
+              type="submit"
+              disabled={action.busy || photoBusy || photoBlocked}
+            >
+              {action.busy ? 'Submitting…' : 'Submit for validation'}
+            </button>
+          </div>
+        </section>
         <ErrorMessage id="report-error">{action.error}</ErrorMessage>
-        <div className="actions">
-          <button
-            className="btn solid"
-            type="submit"
-            disabled={action.busy || photoBusy || photoAnalysis?.screening?.status === 'rejected'}
-          >
-            Submit for validation
-          </button>
-          <button
-            className="btn"
-            type="button"
-            id="cancel-report"
-            disabled={action.busy}
-            onClick={closeModal}
-          >
-            Cancel
-          </button>
-        </div>
+        <button
+          className="btn link report-cancel"
+          type="button"
+          id="cancel-report"
+          disabled={action.busy}
+          onClick={closeModal}
+        >
+          Cancel report
+        </button>
       </form>
     </>
   );

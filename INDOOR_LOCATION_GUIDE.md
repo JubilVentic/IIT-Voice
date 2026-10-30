@@ -8,17 +8,23 @@ Old CASS is the first building with indoor reporting. Its clickable footprint on
 
 ## Reporting a concern
 
-1. Open **Report a concern** and go to the location picker.
+The report dialog has three steps: **Location → Evidence photo → Report details**. Only the current step is shown, so the map opens before the title, categories, and description.
+
+1. Open **Report a concern**. The campus map appears immediately in the Location step.
 2. Click or tap the Old CASS footprint on the campus map.
-3. Within one map frame, the campus map shifts left and floor-plan previews slide in on the right. On phones, both views share the frame vertically. There is no separate floor-choice card. While the floor choices are open, the campus view automatically fits the entire site plan into its available space, including during resizing.
-4. Choose a preview: that floor slides to the center and fills the same map frame, hiding the campus map. Click the room, corridor, or area on the plan.
-5. The pin automatically identifies any mapped room or area beneath it, for example **Old CASS Building · Ground floor · Room 117**. Moving it into the library or a corridor updates the location and highlighted area immediately.
-6. The floor opens fitted to the visible drawing, excluding its hidden page margins, for a closer view without cutting off rooms. Drag the pin to adjust it. You can zoom, use **Fit floor** to restore this framing, or pan and use **Pin at center**.
-7. Add corrections or extra directions in **Location details** when helpful, then submit.
+3. Within one map frame, the campus map shifts left and floor-plan previews slide in on the right. On phones, both views share the frame vertically. There is no separate floor-choice card. The campus view fits the entire site plan into its available space.
+4. Choose a preview: that floor slides to the center and fills the frame. It opens fitted to the visible drawing, excluding its hidden page margins. You can zoom, use **Fit floor**, or pan and use **Pin at center**.
+5. Click the room, corridor, or area on the plan. Its mapped name fills the location, for example **Old CASS Building · Ground floor · Room 117**, and the dialog automatically advances to Evidence photo. Choosing only a building or floor does not complete an indoor pin.
+6. Add an evidence photo, or continue without one. Photo screening and AI suggestions run before continuing. A blocked photo must be removed or replaced. Existing manual-review/unavailable-screening handling is unchanged.
+7. Choose **Continue to report details**. Review and edit the suggested title, primary/additional categories, description, location, and extra directions. Submit for validation only from this final step.
 
-**Back to floor choices** returns to the campus map and in-map previews, preserving the selected floor and indoor pin. The campus map stays mounted; returning to floor choices fits the whole campus again. Manual zoom and current-location selection outside the floor-choice view keep their existing behavior. **Back to campus map** dismisses the floor panel.
+**Back to location**, **Back to evidence**, and **Change location** move between steps while preserving the selected image, AI analysis, pin, and typed fields. To refine a pin, go back to Location and click or drag it; a completed selection advances to evidence again. Merely navigating back does not clear or submit the draft.
 
-Changing floors clears the previous floor's pin, so the reporter must select the new spot. Returning to the campus map preserves the selection. Placing an outdoor pin or using current location replaces the indoor selection; **Clear pin** clears both.
+Inside the Location step, **Back to floor choices** returns to the campus map and in-map previews, preserving the floor and indoor pin. The campus map stays mounted; returning to floor choices fits the whole campus again. **Back to campus map** dismisses the floor panel. Map views are preserved while their wizard step is hidden.
+
+Outdoor pins and a successful **Use current location** also advance to evidence. For buildings without supplied floor plans, **Use this building** confirms the building-level location; extra floor/room details can be entered in the final step. **Continue without a pin** preserves the existing ability to report a written location: it clears the map selection and the final step requires a campus location. Evidence remains optional.
+
+Changing floors clears the previous floor's pin. Placing an outdoor pin or using current location replaces an indoor selection; **Clear pin** clears both. An explicit photo-geotag selection retains its existing behavior and does not replace an indoor pin.
 
 The reporter, Main Admin, Validator, and authorized responsible-office staff can reopen the report and inspect its saved floor plan and pin. Other campus members receive only the approved shared summary, without the private indoor coordinates.
 

@@ -83,6 +83,8 @@ export function FloorPlan({ location, onPick }) {
     if (editable) map.on('click', (e) => choose(e.latlng));
     let fitted = false;
     const observer = new ResizeObserver(() => {
+      // A hidden wizard step has no size; preserve the map view until it is visible again.
+      if (!container.current?.clientWidth || !container.current?.clientHeight) return;
       map.invalidateSize();
       if (!fitted && container.current?.clientWidth && container.current?.clientHeight) {
         map.fitBounds(visibleBounds, { padding: [12, 12], animate: false });
@@ -193,7 +195,7 @@ export function FloorPlan({ location, onPick }) {
   );
 }
 
-export function ReportLocationPicker({ pin, indoor, onPick }) {
+export function ReportLocationPicker({ pin, indoor, onPick, onComplete }) {
   const [buildingId, setBuildingId] = useState(indoor?.building_id || ''),
     [floorId, setFloorId] = useState(indoor?.floor_id || ''),
     [floorExpanded, setFloorExpanded] = useState(Boolean(indoor?.floor_id));
@@ -229,6 +231,7 @@ export function ReportLocationPicker({ pin, indoor, onPick }) {
     closeBuilding();
     setFloorId('');
     onPick(point);
+    onComplete?.();
   }
   return (
     <section className="report-location-picker" aria-label="Report location picker">
@@ -298,7 +301,14 @@ export function ReportLocationPicker({ pin, indoor, onPick }) {
                       {building.name} is selected on the campus map. Floor plans are not available
                       for this building yet. Enter the floor and room in Location details.
                     </p>
-                    <button type="button" className="btn" onClick={closeBuilding}>
+                    <button
+                      type="button"
+                      className="btn"
+                      onClick={() => {
+                        closeBuilding();
+                        onComplete?.();
+                      }}
+                    >
                       Use this building
                     </button>
                   </>
@@ -323,12 +333,13 @@ export function ReportLocationPicker({ pin, indoor, onPick }) {
                 <FloorPlan
                   key={`${building.id}/${floorId}`}
                   location={indoor || { building_id: building.id, floor_id: floorId }}
-                  onPick={(point) =>
+                  onPick={(point) => {
                     onPick({
                       ...buildingPin(building),
                       indoor_location: { building_id: building.id, floor_id: floorId, ...point },
-                    })
-                  }
+                    });
+                    onComplete?.();
+                  }}
                 />
               </div>
             )}

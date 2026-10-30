@@ -106,6 +106,46 @@ server.main()`,
       await page.getByRole('button', { name: 'Sign in →', exact: true }).click();
       await page.locator('.stats').waitFor();
     }
+    async function reportStep(index, target = page) {
+      const current = await target
+        .locator('.report-progress')
+        .evaluate((list) =>
+          Array.from(list.children).findIndex(
+            (item) => item.getAttribute('aria-current') === 'step'
+          )
+        );
+      if (current === index) return;
+      if (index === 0) {
+        await target
+          .getByRole('button', {
+            name: current === 2 ? 'Change location' : 'Back to location',
+            exact: true,
+          })
+          .click();
+      } else if (index === 1) {
+        if (current === 2)
+          await target.getByRole('button', { name: 'Back to evidence', exact: true }).click();
+        else {
+          const next = target.getByRole('button', { name: 'Continue to evidence', exact: true });
+          await (
+            (await next.isEnabled())
+              ? next
+              : target.getByRole('button', { name: 'Continue without a pin', exact: true })
+          ).click();
+        }
+      } else {
+        if (current === 0) await reportStep(1, target);
+        await target
+          .getByRole('button', { name: 'Continue to report details', exact: true })
+          .click();
+      }
+      await target
+        .getByRole('heading', {
+          name: ['Where is the concern?', 'Add evidence', 'Describe the concern'][index],
+          exact: true,
+        })
+        .waitFor();
+    }
     async function openCassFromMap() {
       await page.locator('#pick-map').scrollIntoViewIfNeeded();
       await page.locator('#pick-map .campus-fit').click();
@@ -400,7 +440,11 @@ server.main()`,
     await page.screenshot({ path: path.join(root, 'test-results/student.png'), fullPage: true });
     await page.locator('[data-new]').click();
     await page.locator('#report-form').waitFor();
-    await page.locator('#report-form [name=title]').click();
+    assert.equal(await page.locator('#pick-map').isVisible(), true);
+    assert.equal(await page.locator('#report-form [name=title]').isVisible(), false);
+    assert.equal(await page.locator('#report-form [name=image]').isVisible(), false);
+    await page.screenshot({ path: path.join(root, 'test-results/report-location-step.png') });
+    await page.getByRole('heading', { name: 'Where is the concern?', exact: true }).click();
     assert.equal(
       await page.locator('#modal').count(),
       1,
@@ -413,7 +457,7 @@ server.main()`,
       1,
       'Dialog padding must not count as the backdrop'
     );
-    await page.locator('#report-form [name=title]').hover();
+    await page.getByRole('heading', { name: 'Where is the concern?', exact: true }).hover();
     await page.mouse.down();
     await page.mouse.move(5, 5);
     await page.mouse.up();
@@ -435,12 +479,23 @@ server.main()`,
     await page.locator('[data-new]').click();
     await page.locator('#report-form').waitFor();
     assert.equal(await page.locator('#report-form [name=priority]').count(), 0);
+    await reportStep(2);
+    await page.getByRole('button', { name: 'Submit for validation', exact: true }).click();
+    assert.equal(
+      await page
+        .locator('#report-form [name=title]')
+        .evaluate((input) => document.activeElement === input && !input.validity.valid),
+      true,
+      'Required details are validated only on final submission'
+    );
+    await page.getByRole('heading', { name: 'Describe the concern', exact: true }).waitFor();
     await page.locator('#report-form [name=category]').selectOption('Safety, Security & Risk');
     assert.equal(
       await page.locator('#report-form [name=categories]:checked').count(),
       1,
       'Replacing a lone default category must not add an unsupported extra'
     );
+    await reportStep(0);
     assert.ok((await page.locator('#pick-map').boundingBox()).height >= 498);
     const cassOutline = page.getByRole('button', {
       name: 'Open Old CASS Building floor plans',
@@ -609,6 +664,11 @@ server.main()`,
         await page.mouse.move(target.x, target.y - marker.height / 2, { steps: 12 });
         await page.mouse.up();
       } else await page.mouse.click(target.x, target.y);
+      await page.getByRole('heading', { name: 'Add evidence', exact: true }).waitFor();
+      assert.equal(await page.locator('#report-form [name=image]').isVisible(), true);
+      assert.equal(await page.locator('#report-form [name=title]').isVisible(), false);
+      await page.screenshot({ path: path.join(root, 'test-results/report-evidence-step.png') });
+      await reportStep(0);
     }
     await pickIndoorPixel(607, 215);
     assert.equal(
@@ -636,6 +696,7 @@ server.main()`,
     );
     assert.equal(await page.locator('.indoor-area-highlight').count(), 0);
     await page.getByRole('button', { name: 'Place indoor pin at map center' }).click();
+    await reportStep(0);
     await page.locator('.floor-plan-map .leaflet-marker-icon').waitFor();
     await page.getByRole('button', { name: '← Back to floor choices', exact: true }).click();
     assert.equal(await page.locator('#pick-map').isVisible(), true);
@@ -664,6 +725,7 @@ server.main()`,
       );
     }
     await page.getByRole('button', { name: 'Place indoor pin at map center' }).click();
+    await reportStep(0);
     await page.getByRole('button', { name: '← Back to campus map', exact: true }).click();
     await openCassFromMap();
     await page.getByRole('button', { name: 'Fourth floor · Rooftop theatre', exact: true }).click();
@@ -720,6 +782,7 @@ server.main()`,
           path: path.join(root, 'test-results/gymnasium-location-selected.png'),
         });
       await page.getByRole('button', { name: 'Use this building', exact: true }).click();
+      await reportStep(0);
       await page.locator('#pick-map .leaflet-marker-icon').waitFor();
       await page.getByRole('button', { name: 'Clear pin', exact: true }).click();
     }
@@ -753,9 +816,11 @@ server.main()`,
     const blockedFixture = coloredPhoto('red'),
       reviewFixture = coloredPhoto('blue');
     // The test server mocks Gemini; EXIF parsing and saved analysis use the real API.
+    await reportStep(2);
     await page
       .locator('#report-form [name=title]')
       .fill('Draft must survive file picker cancellation');
+    await reportStep(1);
     await page.locator('#report-form [name=image]').dispatchEvent('cancel', { bubbles: true });
     assert.equal(await page.locator('#report-form').count(), 1);
     assert.equal(
@@ -765,21 +830,23 @@ server.main()`,
     await page.locator('#report-form [name=image]').setInputFiles(blockedFixture);
     await page.locator('#report-form .photo-screening.rejected').waitFor();
     assert.equal(
-      await page.getByRole('button', { name: 'Submit for validation', exact: true }).isDisabled(),
-      true
+      await page
+        .getByRole('button', { name: 'Continue to report details', exact: true })
+        .isDisabled(),
+      true,
+      'A blocked photo cannot advance to the final step'
     );
+    assert.equal(await page.locator('#report-form button[type=submit]').isDisabled(), true);
     assert.equal(
       await page.locator('.photo-preview').count(),
       0,
       'Blocked image must not be previewed'
     );
     await page.getByRole('button', { name: 'Remove photo', exact: true }).click();
-    assert.equal(
-      await page.getByRole('button', { name: 'Submit for validation', exact: true }).isDisabled(),
-      false
-    );
+    assert.equal(await page.locator('#report-form button[type=submit]').isDisabled(), false);
     await page.locator('#report-form [name=image]').setInputFiles(photo);
     await page.getByRole('button', { name: 'Use photo geotag', exact: true }).click();
+    await reportStep(2);
     assert.equal(
       await page
         .locator('#report-form [name=categories][value="Safety, Security & Risk"]')
@@ -900,6 +967,12 @@ server.main()`,
       await page.locator('#report-form [name=category]').inputValue(),
       'Safety, Security & Risk'
     );
+    await reportStep(0);
+    assert.equal(
+      await page.locator('#report-form [name=image]').evaluate((input) => input.files.length),
+      1,
+      'Photo survives back navigation'
+    );
     await page.locator('#pick-map .leaflet-control-zoom-in').click();
     await page.waitForTimeout(300);
     await page.locator('#pick-map .leaflet-control-zoom-in').click();
@@ -914,9 +987,11 @@ server.main()`,
       .setGeolocation({ latitude: 8.24175844, longitude: 124.24389112, accuracy: 10 });
     await page.context().grantPermissions(['geolocation'], { origin: base });
     await page.getByRole('button', { name: 'Use current location', exact: true }).click();
+    await page.getByRole('heading', { name: 'Add evidence', exact: true }).waitFor();
     await page.waitForFunction(
       () => document.querySelector('#report-form [name=location]').value === 'COE Building'
     );
+    await reportStep(0);
     await page.waitForTimeout(500);
     assert.equal(await planWidth(), selectedZoom, 'Current location must preserve the chosen zoom');
     const beforeDrag = await page.locator('#pin-label').innerText();
@@ -959,10 +1034,9 @@ server.main()`,
       (previous) => document.querySelector('#pin-label').textContent !== previous,
       beforeDrag
     );
-    await page
-      .locator('#report-form [name=location_details]')
-      .fill('2nd floor, Room 204, beside the stairs');
+    await reportStep(0);
     await page.locator('#pick-map').click({ position: { x: 120, y: 100 } });
+    await reportStep(0);
     assert.equal(await page.locator('#pick-map .leaflet-marker-icon.pin-glide').count(), 1);
     assert.equal(
       await page
@@ -975,15 +1049,26 @@ server.main()`,
     );
     await page.locator('#clear-pin').click();
     assert.equal(await page.locator('#report-form [name=location]').inputValue(), '');
-    await page.locator('#pick-map').click({ position: { x: 150, y: 100 } });
+    await page.locator('#pick-map').scrollIntoViewIfNeeded();
+    await page.locator('#pick-map .campus-fit').click();
+    await page.waitForTimeout(400);
+    const outdoorMap = await page.locator('#pick-map').boundingBox();
+    await page
+      .locator('#pick-map')
+      .click({ position: { x: outdoorMap.width / 2, y: outdoorMap.height / 2 } });
     await page.waitForFunction(
       () => document.querySelector('#report-form [name=location]').value.length > 0
     );
+    await reportStep(2);
+    await page
+      .locator('#report-form [name=location_details]')
+      .fill('2nd floor, Room 204, beside the stairs');
     await page.locator('#report-form [name=title]').fill('Browser test: broken library chair');
     await page.locator('#report-form [name=location]').fill('Library reading area');
     await page
       .locator('#report-form [name=description]')
       .fill('A chair is broken near the reading area. Please inspect and repair it.');
+    await page.screenshot({ path: path.join(root, 'test-results/report-details-step.png') });
     await page.getByRole('button', { name: 'Submit for validation', exact: true }).click();
     await page
       .locator('#modal-title')
@@ -1302,9 +1387,11 @@ server.main()`,
     await login('student@iitvoice.local');
     await page.locator('[data-new]').click();
     await page.locator('#report-form').waitFor();
+    await reportStep(1);
     await page.locator('#report-form [name=image]').setInputFiles(reviewFixture);
     await page.locator('#report-form .photo-screening.needs_review').waitFor();
     assert.equal(await page.locator('.photo-preview').count(), 0);
+    await reportStep(2);
     await page.locator('#report-form [name=title]').fill('Questionable evidence fixture');
     await page.locator('#report-form [name=location]').fill('Library');
     await page
@@ -1394,6 +1481,7 @@ server.main()`,
     await page.waitForTimeout(400);
     await checkFloorFraming();
     await page.screenshot({ path: path.join(root, 'test-results/old-cass-indoor-mobile.png') });
+    await reportStep(2);
     await page.locator('#report-form [name=title]').fill('Old CASS indoor test concern');
     await page
       .locator('#report-form [name=description]')
@@ -1555,6 +1643,7 @@ server.main()`,
           'Escape closes the mobile menu'
         );
         await mobile.locator('[data-new]').tap();
+        await reportStep(2, mobile);
         await mobile.locator('#report-form [name=title]').fill('Mobile report draft');
         await mobile.locator('#report-form .category-selection summary').tap();
         await mobile.setViewportSize({ width: 320, height: 844 });
@@ -1562,8 +1651,10 @@ server.main()`,
         await mobile.setViewportSize({ width: 390, height: 844 });
         await mobile.waitForTimeout(300);
         await mobile.screenshot({ path: path.join(root, 'test-results/mobile-report-form.png') });
+        await reportStep(1, mobile);
         await mobile.locator('#report-form [name=image]').setInputFiles(photo);
         await mobile.locator('#report-form .photo-screening.appropriate').waitFor();
+        await reportStep(2, mobile);
         await mobile.locator('.description-editor').scrollIntoViewIfNeeded();
         await mobile
           .locator('#report-form [name=description]')
@@ -1584,7 +1675,9 @@ server.main()`,
         await mobile.screenshot({
           path: path.join(root, 'test-results/mobile-description-recheck.png'),
         });
+        await reportStep(1, mobile);
         await mobile.getByRole('button', { name: 'Remove photo', exact: true }).click();
+        await reportStep(2, mobile);
         assert.equal(
           await mobile.locator('#description-recheck').count(),
           0,
