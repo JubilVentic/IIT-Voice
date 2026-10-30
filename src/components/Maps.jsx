@@ -12,6 +12,7 @@ import {
 import { reportHotspots } from '../report-summary.js';
 import { currentLocation } from '../current-location.js';
 import { CategoryOptions } from './Categories.jsx';
+import { campusImagePoint, indoorBuildings } from '../indoor-location.js';
 import {
   categoryPins,
   priorityPins,
@@ -21,7 +22,26 @@ import {
 } from '../map-markers.js';
 
 const emptyReports = [];
-const pinIcon = ({ color = '#7a203c', symbol = '' } = {}) =>
+function buildingHoverImage(building, id) {
+  const width = campusBounds[1][1] - campusBounds[0][1],
+    height = campusBounds[1][0] - campusBounds[0][0];
+  const xs = building.outline.map(([x]) => x * width),
+    ys = building.outline.map(([, y]) => y * height);
+  const points = xs.map((x, index) => `${x},${ys[index]}`).join(' ');
+  const center = [(Math.min(...xs) + Math.max(...xs)) / 2, (Math.min(...ys) + Math.max(...ys)) / 2];
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
+  svg.setAttribute('aria-hidden', 'true');
+  // Only the roof is copied; the courtyard and nearby buildings stay on the base map.
+  svg.innerHTML = `
+    <defs><clipPath id="${id}"><polygon points="${points}" /></clipPath></defs>
+    <polygon class="building-hover-original" points="${points}" fill="white" />
+    <g class="building-hover-image" style="transform-origin:${center[0]}px ${center[1]}px">
+      <image href="${campusPlanUrl}" width="${width}" height="${height}" clip-path="url(#${id})" />
+    </g>`;
+  return svg;
+}
+export const pinIcon = ({ color = '#7a203c', symbol = '' } = {}) =>
   L.divIcon({
     className: 'report-marker',
     html: `<svg class="map-pin" viewBox="0 0 32 44" aria-hidden="true"><path fill="${color}" stroke="white" stroke-width="2.5" d="M16 1.5C8 1.5 1.5 8 1.5 16c0 10 14.5 25.5 14.5 25.5S30.5 26 30.5 16C30.5 8 24 1.5 16 1.5Z"/>${symbol ? `<text x="16" y="20" text-anchor="middle" fill="white" font-size="13" font-weight="700" font-family="sans-serif">${symbol}</text>` : '<circle cx="16" cy="16" r="5" fill="white"/>'}</svg>`,
@@ -36,8 +56,13 @@ export function ReportMap({
   pick = false,
   pin = null,
   onPick,
+  onBuildingPick,
   colorBy = 'priority',
   density = false,
+  mapFrameClassName = '',
+  mapOverlay,
+  hidePickControls = false,
+  fitCampusOnResize = false,
 }) {
   const { openReport, toast } = useVoice();
   const container = useRef(null),
@@ -49,8 +74,8 @@ export function ReportMap({
   const [locationPhase, setLocationPhase] = useState('');
   const locationRequest = useRef(0);
   const fittedReports = useRef(reports);
-  const callbacks = useRef({ openReport, toast, onPick, pin });
-  callbacks.current = { openReport, toast, onPick, pin };
+  const callbacks = useRef({ openReport, toast, onPick, pin, onBuildingPick, fitCampusOnResize });
+  callbacks.current = { openReport, toast, onPick, pin, onBuildingPick, fitCampusOnResize };
   async function useCurrentLocation() {
     if (!navigator.geolocation) {
       setLocationError('This browser does not support current location. Select a pin on the map.');
@@ -163,11 +188,15 @@ export function ReportMap({
     let fitted = false;
     const observer = new ResizeObserver(() => {
       map.invalidateSize();
-      if (!fitted && container.current?.clientWidth && container.current?.clientHeight) {
+      if (
+        (!fitted || callbacks.current.fitCampusOnResize) &&
+        container.current?.clientWidth &&
+        container.current?.clientHeight
+      ) {
         map.fitBounds(campusBounds, { padding: [16, 16], animate: false });
         // A whole landscape plan becomes unreadably small on a phone.
         // Start closer to campus; Fit campus remains available for orientation.
-        if (container.current.clientWidth < 600)
+        if (!callbacks.current.fitCampusOnResize && container.current.clientWidth < 600)
           map.setZoom(Math.max(map.getZoom(), -0.5), { animate: false });
         fitted = true;
       }
@@ -183,6 +212,64 @@ export function ReportMap({
       pickedMarker.current = null;
     };
   }, [pick]);
+  useEffect(() => {
+    if (fitCampusOnResize && mapRef.current) {
+      mapRef.current.invalidateSize();
+      mapRef.current.fitBounds(campusBounds, { padding: [16, 16], animate: false });
+    }
+  }, [fitCampusOnResize]);
+  const selectableBuildings = pick && Boolean(onBuildingPick);
+  useEffect(() => {
+    if (!selectableBuildings || !mapRef.current) return;
+    const outlines = L.layerGroup().addTo(mapRef.current);
+    indoorBuildings.forEach((building) => {
+      const shape = L.polygon(building.outline.map(campusImagePoint), {
+        color: '#404040',
+        weight: 1.25,
+        opacity: 0,
+        fillColor: '#404040',
+        fillOpacity: 0,
+        bubblingMouseEvents: false,
+        className: 'indoor-building-outline',
+      }).addTo(outlines);
+      const open = () => callbacks.current.onBuildingPick?.(building);
+      shape.on('click', open);
+      const element = shape.getElement();
+      const image = buildingHoverImage(building, `building-clip-${L.stamp(shape)}`);
+      image.dataset.buildingId = building.id;
+      L.svgOverlay(image, campusBounds, { className: 'building-hover-overlay' }).addTo(outlines);
+      let hovering = false;
+      const updateHover = () => {
+        const active = hovering || element.matches(':focus');
+        element.classList.toggle('is-hovered', active);
+        image.classList.toggle('is-hovered', active);
+      };
+      shape.on('mouseover', () => {
+        hovering = true;
+        updateHover();
+      });
+      shape.on('mouseout', () => {
+        hovering = false;
+        updateHover();
+      });
+      element.dataset.buildingId = building.id;
+      element.setAttribute('tabindex', '0');
+      element.setAttribute('role', 'button');
+      element.setAttribute(
+        'aria-label',
+        building.floors.length ? `Open ${building.name} floor plans` : `Select ${building.name}`
+      );
+      element.addEventListener('focus', updateHover);
+      element.addEventListener('blur', updateHover);
+      element.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          L.DomEvent.stop(event);
+          open();
+        }
+      });
+    });
+    return () => outlines.remove();
+  }, [selectableBuildings]);
   useEffect(() => {
     const map = mapRef.current;
     if (!map || pick) return;
@@ -321,7 +408,7 @@ export function ReportMap({
   }, [pin, pick]);
   return (
     <>
-      {pick && (
+      {pick && !hidePickControls && (
         <>
           <button
             type="button"
@@ -343,19 +430,22 @@ export function ReportMap({
           )}
         </>
       )}
-      <div
-        ref={container}
-        id={pick ? 'pick-map' : 'campus-map'}
-        className={`map ${large ? 'large' : ''} ${pick ? 'pick' : ''}`}
-        aria-label={
-          pick
-            ? 'Click to select report location'
-            : density
-              ? 'Report concentration map'
-              : 'Campus concern map'
-        }
-      />
-      <p className="map-caption site-plan-note">
+      <div className={mapFrameClassName || undefined}>
+        <div
+          ref={container}
+          id={pick ? 'pick-map' : 'campus-map'}
+          className={`map ${large ? 'large' : ''} ${pick ? 'pick' : ''}`}
+          aria-label={
+            pick
+              ? 'Click to select report location'
+              : density
+                ? 'Report concentration map'
+                : 'Campus concern map'
+          }
+        />
+        {mapOverlay}
+      </div>
+      <p className="map-caption site-plan-note" hidden={hidePickControls}>
         MSU–IIT Tibanga site plan · GPS alignment is approximate. Confirm the building and adjust
         the pin.
       </p>

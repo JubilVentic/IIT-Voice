@@ -378,6 +378,83 @@ class SystemTests(unittest.TestCase):
             self.student.request("/api/reports", "POST", {"title": "Test"}, csrf=False)[0], 403
         )
         self.assertEqual(Client(self.base).request("/api/bootstrap")[0], 401)
+
+    def test_indoor_location_persists_for_the_reporter_and_assigned_staff_only(self):
+        point = {"building_id": "old-cass", "floor_id": "second", "x": 0.25, "y": 0.8}
+        rid = self.report(indoor_location=point, location_details="Room 215")
+        path = "/api/reports/" + str(rid)
+        for client in (self.student, self.validator, self.admin):
+            status, result = client.request(path)
+            self.assertEqual(status, 200)
+            self.assertEqual(result["indoor_location"], point)
+            self.assertEqual(result["location"], "Old CASS Building · Second floor")
+        self.assertEqual(self.other.request(path)[0], 404)
+        status, result = self.review(rid, office_id=2, assigned_to=self.plant_user["id"])
+        self.assertEqual(status, 200, result)
+        self.assertEqual(self.plant.request(path)[1]["indoor_location"], point)
+        self.assertEqual(self.ict.request(path)[0], 404)
+        status, public = self.other.request(path)
+        self.assertEqual(status, 200)
+        self.assertNotIn("indoor_location", public)
+        self.assertNotIn("location_details", public)
+        with server.connect() as connection:
+            stored = connection.execute(
+                "SELECT indoor_location FROM reports WHERE id=?", (rid,)
+            ).fetchone()[0]
+        self.assertEqual(json.loads(stored), point)
+
+    def test_mapped_indoor_room_is_saved_but_not_exposed_in_campus_summary(self):
+        point = {"building_id": "old-cass", "floor_id": "ground", "x": 607 / 1448, "y": 215 / 1086}
+        rid = self.report(
+            indoor_location={**point, "area_id": "fake-room", "area_name": "Fake room"}
+        )
+        path = "/api/reports/" + str(rid)
+        for client in (self.student, self.validator, self.admin):
+            result = client.request(path)[1]
+            self.assertEqual(result["location"], "Old CASS Building · Ground floor · Room 117")
+            self.assertNotIn("area_id", result["indoor_location"])
+            self.assertNotIn("area_name", result["indoor_location"])
+        self.assertEqual(self.review(rid, office_id=2, assigned_to=self.plant_user["id"])[0], 200)
+        self.assertEqual(
+            self.plant.request(path)[1]["location"], "Old CASS Building · Ground floor · Room 117"
+        )
+        public = self.other.request(path)[1]
+        self.assertEqual(public["location"], "Old CASS Building · Ground floor")
+        self.assertNotIn("indoor_location", public)
+
+    def test_invalid_indoor_points_are_rejected_without_creating_reports(self):
+        point = {"building_id": "old-cass", "floor_id": "ground", "x": 0.5, "y": 0.5}
+        with server.connect() as connection:
+            before = connection.execute("SELECT count(*) FROM reports").fetchone()[0]
+        for change in (
+            {"building_id": "unknown"},
+            {"floor_id": "fifth"},
+            {"x": True},
+            {"x": None},
+            {"x": -0.1},
+            {"y": 1.1},
+            {"y": float("nan")},
+        ):
+            status, result = self.student.request(
+                "/api/reports",
+                "POST",
+                {
+                    "title": "Indoor concern",
+                    "description": "A concern inside the building.",
+                    "category": "Safety, Security & Risk",
+                    "location": "Old CASS",
+                    "latitude": 8.2415,
+                    "longitude": 124.243,
+                    "indoor_location": {**point, **change},
+                },
+            )
+            self.assertEqual(status, 400, result)
+        with server.connect() as connection:
+            self.assertEqual(
+                connection.execute("SELECT count(*) FROM reports").fetchone()[0], before
+            )
+        rid = self.report()
+        self.assertIsNone(self.student.request("/api/reports/" + str(rid))[1]["indoor_location"])
         rid = self.report()
         self.assertEqual(
             self.student.request("/api/reports/" + str(rid), "PATCH", {"status": "validated"})[0],

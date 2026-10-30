@@ -1,0 +1,23 @@
+[
+  ["ground", 607, 215, "Room 117"],
+  ["ground", 665, 181, "Room 118"],
+  ["ground", 510, 690, "CASS Library"],
+  ["ground", 343, 743, "Librarian’s office"],
+  ["ground", 870, 690, "Psychology Department"],
+  ["ground", 600, 277, "Corridor"],
+  ["ground", 756, 110, "Comfort room"],
+  ["second", 460, 305, "Room 215"],
+  ["second", 940, 710, "CASS Computer Laboratory"],
+  ["second", 1080, 770, "History Department"],
+  ["third", 550, 680, "Dean’s office"],
+  ["third", 603, 680, "Law office"],
+  ["third", 653, 680, "Law Library"],
+  ["third", 815, 677, "Room 306"],
+  ["third", 900, 620, "Corridor"],
+  ["third", 1050, 770, "Room 302"],
+  ["third", 1050, 875, "Comfort room"],
+  ["fourth", 1040, 760, "CASS Rooftop Theatre"],
+  ["third", 500, 300, null],
+  ["third", 903, 680, null],
+  ["ground", 700, 500, null]
+]

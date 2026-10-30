@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS reports (
   categories TEXT NOT NULL DEFAULT '[]',
   location TEXT NOT NULL,
   location_details TEXT NOT NULL DEFAULT '',
+  indoor_location TEXT NOT NULL DEFAULT '{}',
   latitude DOUBLE PRECISION,
   longitude DOUBLE PRECISION,
   priority TEXT NOT NULL DEFAULT 'normal',

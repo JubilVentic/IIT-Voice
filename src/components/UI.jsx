@@ -3,6 +3,12 @@ import { date, reportCategories, priorities, statusLabels, useVoice } from '../l
 
 const shapes = {
   menu: <path d="M3 6h18M3 12h18M3 18h18" />,
+  sidebar: (
+    <>
+      <rect x="3" y="4" width="18" height="16" rx="3" />
+      <path d="M9 4v16" />
+    </>
+  ),
   chevron: <path d="m6 9 6 6 6-6" />,
   grid: (
     <>
@@ -154,7 +160,7 @@ export function ReportList({ reports }) {
     <div className="empty">No concerns here yet.</div>
   );
 }
-export function Dialog({ children, onClose }) {
+export function Dialog({ children, onClose, className = '' }) {
   const ref = useRef(null),
     backdropPress = useRef(false);
   useEffect(() => {
@@ -174,6 +180,7 @@ export function Dialog({ children, onClose }) {
     <dialog
       ref={ref}
       id="modal"
+      className={className}
       aria-labelledby="modal-title"
       onPointerDown={(e) => {
         backdropPress.current = isBackdrop(e);

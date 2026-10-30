@@ -63,6 +63,7 @@ The form's inputs generally become columns in one row of `reports`. There is no 
 | Campus location                                      | `reports.location`                         |
 | Floor, room, or other location details               | `reports.location_details`                 |
 | Selected map position                                | `reports.latitude` and `reports.longitude` |
+| Building, floor, and point inside its floor plan     | `reports.indoor_location`                  |
 | Urgency                                              | `reports.priority`                         |
 | Workflow state                                       | `reports.status`                           |
 | Person who submitted it                              | `reports.reporter_id`                      |
@@ -71,6 +72,8 @@ The form's inputs generally become columns in one row of `reports`. There is no 
 | Evidence photo                                       | A linked row in `attachments`              |
 
 `reports.categories` stores a list as JSON text. This lets one concern appear under multiple category filters without creating several copies of that concern.
+
+`reports.indoor_location` stores the building ID, floor ID, and the pin's horizontal/vertical fractions of the floor-plan image. These are image positions, not GPS. The room or area name is derived from the containing polygon in the shared floor-plan catalog and included in the private report location. Shared campus summaries omit this room detail. For indoor reports, the ordinary map coordinates identify the building on the campus map. See [the indoor-location guide](INDOOR_LOCATION_GUIDE.md) for examples and setup.
 
 The report also has visibility and public-summary fields. These support sharing an approved campus summary while keeping restricted report details and evidence subject to access checks.
 

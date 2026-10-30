@@ -14,7 +14,8 @@ import {
   validateImage,
 } from '../lib.js';
 import { Badge, ErrorMessage, Field, ReportList } from '../components/UI.jsx';
-import { ReportMap } from '../components/Maps.jsx';
+import { FloorPlan, ReportLocationPicker } from '../components/FloorPlans.jsx';
+import { hasIndoorPoint, indoorLabel } from '../indoor-location.js';
 import { pinnedLocation } from '../campus-location.js';
 import { CategoryFields } from '../components/Categories.jsx';
 import { PhotoAssist, CompletionCheck } from '../components/PhotoAssist.jsx';
@@ -22,6 +23,7 @@ import { PhotoAssist, CompletionCheck } from '../components/PhotoAssist.jsx';
 export function NewReport() {
   const { user, data, api, refresh, toast, openReport, closeModal } = useVoice();
   const [pin, setPin] = useState(null),
+    [indoor, setIndoor] = useState(null),
     [location, setLocation] = useState(''),
     [category, setCategory] = useState(data.categories[0]),
     [categories, setCategories] = useState([data.categories[0]]),
@@ -50,8 +52,13 @@ export function NewReport() {
     if (result?.title || result?.category) setTitle(result.title || result.category);
   }
   function pickLocation(point) {
-    setPin(point);
-    setLocation(pinnedLocation(point));
+    setPin({ latitude: point.latitude, longitude: point.longitude });
+    setIndoor(point.indoor_location || null);
+    setLocation(
+      point.indoor_location
+        ? indoorLabel(point.indoor_location)
+        : point.location || pinnedLocation(point)
+    );
   }
   function submit(e) {
     e.preventDefault();
@@ -59,6 +66,8 @@ export function NewReport() {
     action.run(async () => {
       if (photoBusy || photoAnalysis?.screening?.status === 'rejected')
         throw new Error('Remove or replace the blocked photo before submitting.');
+      if (indoor && !hasIndoorPoint(indoor))
+        throw new Error('Select the exact concern location on the floor plan before submitting.');
       const file = values.image;
       if (file?.size) validateImage(file);
       const body = {};
@@ -74,6 +83,7 @@ export function NewReport() {
       body.categories = categories;
       body.latitude = pin?.latitude ?? null;
       body.longitude = pin?.longitude ?? null;
+      body.indoor_location = indoor;
       const created = await api('/api/reports', { method: 'POST', body });
       let warning = '';
       if (file?.size) {
@@ -124,7 +134,11 @@ export function NewReport() {
           />
           <Field
             label="Campus location"
-            help="Filled from your pin. Edit the building name if needed."
+            help={
+              indoor
+                ? 'Filled from the building, floor, and mapped area under your pin. Add corrections in Location details.'
+                : 'Filled from your pin. Edit the building name if needed.'
+            }
           >
             <input
               name="location"
@@ -216,13 +230,15 @@ export function NewReport() {
           onAnalysis={applyPhotoAnalysis}
           onBusyChange={setPhotoBusy}
           onErrorChange={setPhotoError}
-          onGeotag={pickLocation}
+          onGeotag={(point) => {
+            if (!indoor) pickLocation(point);
+          }}
         />
         <h3>Pin the location (optional)</h3>
         <p className="meta">
-          Use your current location or click the map. Drag the pin to refine its position.
+          Tap a building to select it, or place an outdoor pin. Drag the pin to refine its position.
         </p>
-        <ReportMap pick pin={pin} onPick={pickLocation} />
+        <ReportLocationPicker pin={pin} indoor={indoor} onPick={pickLocation} />
         <p id="pin-label" className="map-caption">
           {pin
             ? `Selected: ${pin.latitude.toFixed(5)}, ${pin.longitude.toFixed(5)}`
@@ -234,6 +250,7 @@ export function NewReport() {
           id="clear-pin"
           onClick={() => {
             setPin(null);
+            setIndoor(null);
             setLocation('');
           }}
         >
@@ -917,6 +934,12 @@ export function ReportDetails({ id }) {
         <Badge value={r.priority} />
         <Badge>{r.visibility === 'campus' ? 'Campus summary' : 'Restricted'}</Badge>
       </div>
+      {r.indoor_location && (
+        <section className="panel" aria-label="Reported indoor location">
+          <h3>Indoor location</h3>
+          <FloorPlan location={r.indoor_location} />
+        </section>
+      )}
       <div className="columns">
         <section>
           <p className="report-description">{r.description}</p>

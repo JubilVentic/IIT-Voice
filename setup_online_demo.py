@@ -87,6 +87,9 @@ def setup():
 
     factory = lambda: connect_postgres(url, DEMO_SCHEMA)
     with factory() as c:
+        c.execute(
+            "ALTER TABLE reports ADD COLUMN IF NOT EXISTS indoor_location TEXT NOT NULL DEFAULT '{}'"
+        )
         server.initialize_defaults(c)
     server.ensure_demo_accounts(connect_db=factory)
     with factory() as c:

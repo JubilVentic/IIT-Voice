@@ -106,6 +106,18 @@ server.main()`,
       await page.getByRole('button', { name: 'Sign in →', exact: true }).click();
       await page.locator('.stats').waitFor();
     }
+    async function openCassFromMap() {
+      await page.locator('#pick-map').scrollIntoViewIfNeeded();
+      await page.locator('#pick-map .campus-fit').click();
+      await page.waitForTimeout(350);
+      const image = await page.locator('#pick-map img.leaflet-image-layer').boundingBox();
+      // A point inside Old CASS's upper roof wing, away from its courtyard and edges.
+      const x = image.x + image.width * 0.27,
+        y = image.y + image.height * 0.235;
+      await page.mouse.move(x, y);
+      await page.waitForTimeout(180);
+      await page.mouse.click(x, y);
+    }
     async function logout() {
       await page.locator('.sidebar [data-logout]').click();
       await page.locator('#auth-form').waitFor();
@@ -180,6 +192,33 @@ server.main()`,
       await page.locator('.demo-accounts').waitFor();
     }
     await login('admin@iitvoice.local');
+    await page.locator('.report-analytics').waitFor();
+    const sidebarWidth = (await page.locator('.sidebar').boundingBox()).width;
+    await page.getByRole('button', { name: 'Collapse sidebar', exact: true }).click();
+    assert.equal((await page.locator('.sidebar').boundingBox()).width, 76);
+    assert.equal(await page.locator('.sidebar .nav-label').first().isVisible(), false);
+    assert.equal(
+      await page.locator('.sidebar .nav .icon').count(),
+      6,
+      'All admin icons remain available'
+    );
+    await page
+      .getByRole('navigation', { name: 'Main navigation', exact: true })
+      .getByRole('button', { name: 'All reports', exact: true })
+      .click();
+    await page.locator('#search').waitFor();
+    await page.reload();
+    await page.getByRole('button', { name: 'Expand sidebar', exact: true }).waitFor();
+    assert.equal(
+      (await page.locator('.sidebar').boundingBox()).width,
+      76,
+      'The collapsed preference survives refresh'
+    );
+    await page.screenshot({ path: path.join(root, 'test-results/sidebar-collapsed.png') });
+    await page.getByRole('button', { name: 'Expand sidebar', exact: true }).click();
+    assert.equal((await page.locator('.sidebar').boundingBox()).width, sidebarWidth);
+    assert.equal(await page.locator('.sidebar .nav-label').first().isVisible(), true);
+    await page.locator('.sidebar [data-page=overview]').click();
     await page.locator('.report-analytics').waitFor();
     assert.deepEqual(await page.locator('.analytics-stats .stat strong').allTextContents(), [
       '4',
@@ -402,7 +441,288 @@ server.main()`,
       1,
       'Replacing a lone default category must not add an unsupported extra'
     );
-    assert.equal((await page.locator('#pick-map').boundingBox()).height, 460);
+    assert.ok((await page.locator('#pick-map').boundingBox()).height >= 498);
+    const cassOutline = page.getByRole('button', {
+      name: 'Open Old CASS Building floor plans',
+      exact: true,
+    });
+    await page.waitForFunction(
+      () => document.querySelector('[data-building-id="old-cass"]')?.getAttribute('d') !== 'M0 0'
+    );
+    await cassOutline.scrollIntoViewIfNeeded();
+    const footprint = await cassOutline.boundingBox();
+    // The footprint is concave; its bounding-box center is the inner courtyard.
+    const roofPoint = { x: footprint.width * 0.25, y: footprint.height * 0.12 };
+    const imageBeforeHover = await page.locator('#pick-map img.leaflet-image-layer').boundingBox();
+    await cassOutline.hover({ position: roofPoint });
+    await page.waitForFunction(() =>
+      getComputedStyle(document.querySelector('.indoor-building-outline')).transform.startsWith(
+        'matrix(1.1,'
+      )
+    );
+    const grown = await cassOutline.boundingBox();
+    assert.ok(
+      Math.abs(grown.width / footprint.width - 1.1) < 0.01,
+      'Only the building grows by a modest 10%'
+    );
+    assert.ok(
+      Math.abs(grown.x + grown.width / 2 - (footprint.x + footprint.width / 2)) < 1,
+      'The building grows in place'
+    );
+    assert.deepEqual(
+      await page.locator('#pick-map img.leaflet-image-layer').boundingBox(),
+      imageBeforeHover,
+      'The map and neighboring buildings do not zoom'
+    );
+    assert.equal(
+      await page.locator('.building-zoom-preview').count(),
+      0,
+      'There is no floating preview card'
+    );
+    assert.equal(
+      await page
+        .locator('.building-hover-overlay[data-building-id="old-cass"]')
+        .evaluate((el) => getComputedStyle(el).backgroundColor),
+      'rgba(0, 0, 0, 0)',
+      'The clipped overlay must leave the campus visible'
+    );
+    await page.screenshot({ path: path.join(root, 'test-results/old-cass-hover-grow.png') });
+    const campusPicker = await page.locator('#pick-map').boundingBox();
+    await page.mouse.move(campusPicker.x + 10, campusPicker.y + 10);
+    await page.waitForFunction(() =>
+      ['none', 'matrix(1, 0, 0, 1, 0, 0)'].includes(
+        getComputedStyle(document.querySelector('.indoor-building-outline')).transform
+      )
+    );
+    const restored = await cassOutline.boundingBox();
+    assert.ok(
+      Math.abs(restored.width - footprint.width) < 1,
+      'Leaving the building restores its original size'
+    );
+    await cassOutline.hover({ position: roofPoint });
+    await cassOutline.click({ position: roofPoint });
+    assert.equal(await page.locator('.floor-selector button').count(), 4);
+    assert.equal(
+      await page.locator('#pick-map').isVisible(),
+      true,
+      'The campus map stays visible beside floor choices'
+    );
+    await page.waitForTimeout(400);
+    const leftMap = await page.locator('#pick-map').boundingBox();
+    const floorPanel = await page
+      .getByRole('complementary', { name: 'Old CASS Building floor choices' })
+      .boundingBox();
+    assert.ok(
+      floorPanel.x >= leftMap.x + leftMap.width,
+      'Floor previews appear to the right of the map'
+    );
+    const mapFrame = await page.locator('.location-map-stage').boundingBox();
+    assert.ok(
+      Math.abs(leftMap.y - floorPanel.y) < 2 &&
+        floorPanel.x + floorPanel.width <= mapFrame.x + mapFrame.width + 1 &&
+        floorPanel.y + floorPanel.height <= mapFrame.y + mapFrame.height + 1,
+      'Campus and floor previews share one map frame'
+    );
+    const fittedCampus = await page.locator('#pick-map img.leaflet-image-layer').boundingBox();
+    assert.ok(
+      fittedCampus.x >= leftMap.x - 1 &&
+        fittedCampus.y >= leftMap.y - 1 &&
+        fittedCampus.x + fittedCampus.width <= leftMap.x + leftMap.width + 1 &&
+        fittedCampus.y + fittedCampus.height <= leftMap.y + leftMap.height + 1,
+      'The complete campus drawing fits beside the floor previews'
+    );
+    assert.equal(
+      await page
+        .locator('.floor-preview-card')
+        .first()
+        .evaluate((card) => getComputedStyle(card).borderWidth),
+      '0px',
+      'Floor previews do not have card borders'
+    );
+    assert.equal(await page.locator('.floor-preview-card img').count(), 4);
+    await page.screenshot({ path: path.join(root, 'test-results/old-cass-floor-choices.png') });
+    await page.getByRole('button', { name: 'Ground floor', exact: true }).click();
+    assert.equal(
+      await page.locator('#pick-map').isVisible(),
+      false,
+      'The selected floor takes over the map area'
+    );
+    await page.locator('.floor-plan-map .leaflet-image-layer').waitFor();
+    await page.waitForTimeout(400);
+    const focusedFloor = await page.locator('.picker-full-floor').boundingBox();
+    assert.ok(
+      Math.abs(focusedFloor.width - mapFrame.width) <= 2 &&
+        Math.abs(focusedFloor.height - mapFrame.height) <= 2,
+      'The selected floor fills the same frame'
+    );
+    async function checkFloorFraming() {
+      const framing = await page.locator('.floor-plan-map').evaluate((map) => {
+        const image = map.querySelector('img.leaflet-image-layer');
+        const box = map.getBoundingClientRect(),
+          imageBox = image.getBoundingClientRect();
+        const inset = getComputedStyle(image)
+          .clipPath.match(/[\d.]+/g)
+          .map(Number);
+        const [top, right = top, bottom = top, left = right] = inset;
+        const visible = {
+          x: imageBox.x + (imageBox.width * left) / 100,
+          y: imageBox.y + (imageBox.height * top) / 100,
+          width: imageBox.width * (1 - (left + right) / 100),
+          height: imageBox.height * (1 - (top + bottom) / 100),
+        };
+        return {
+          coverage: Math.max(visible.width / box.width, visible.height / box.height),
+          contained:
+            visible.x >= box.x - 1 &&
+            visible.y >= box.y - 1 &&
+            visible.x + visible.width <= box.right + 1 &&
+            visible.y + visible.height <= box.bottom + 1,
+          width: imageBox.width,
+        };
+      });
+      assert.ok(framing.contained, 'The visible floor plan fits without cropping its rooms');
+      assert.ok(framing.coverage > 0.9, 'The default floor view uses the available map space');
+      return framing.width;
+    }
+    const defaultFloorWidth = await checkFloorFraming();
+    await page.locator('.floor-plan-map .leaflet-control-zoom-in').click();
+    await page.waitForTimeout(350);
+    await page.getByRole('button', { name: 'Fit floor', exact: true }).click();
+    await page.waitForTimeout(400);
+    assert.ok(
+      Math.abs((await checkFloorFraming()) - defaultFloorWidth) < 2,
+      'Fit floor restores the same close framing after manual zoom'
+    );
+    await page.screenshot({ path: path.join(root, 'test-results/old-cass-floor-focused.png') });
+    async function pickIndoorPixel(x, y, drag = false) {
+      await page.locator('.floor-plan-map').scrollIntoViewIfNeeded();
+      const image = await page.locator('.floor-plan-map img.leaflet-image-layer').boundingBox();
+      const target = {
+        x: image.x + (image.width * x) / 1448,
+        y: image.y + (image.height * y) / 1086,
+      };
+      if (drag) {
+        const marker = await page.locator('.floor-plan-map .leaflet-marker-icon').boundingBox();
+        await page.mouse.move(marker.x + marker.width / 2, marker.y + marker.height / 2);
+        await page.mouse.down();
+        // Leaflet anchors the pin at its tip; compensate for grabbing the icon center.
+        await page.mouse.move(target.x, target.y - marker.height / 2, { steps: 12 });
+        await page.mouse.up();
+      } else await page.mouse.click(target.x, target.y);
+    }
+    await pickIndoorPixel(607, 215);
+    assert.equal(
+      await page.locator('#report-form [name=location]').inputValue(),
+      'Old CASS Building · Ground floor · Room 117'
+    );
+    assert.equal(await page.locator('.indoor-area-highlight').count(), 1);
+    await page.screenshot({ path: path.join(root, 'test-results/old-cass-room-detection.png') });
+    await pickIndoorPixel(510, 690, true);
+    assert.equal(
+      await page.locator('#report-form [name=location]').inputValue(),
+      'Old CASS Building · Ground floor · CASS Library',
+      'Dragging the pin updates its room name'
+    );
+    await pickIndoorPixel(600, 277);
+    assert.equal(
+      await page.locator('#report-form [name=location]').inputValue(),
+      'Old CASS Building · Ground floor · Corridor'
+    );
+    await pickIndoorPixel(700, 500);
+    assert.equal(
+      await page.locator('#report-form [name=location]').inputValue(),
+      'Old CASS Building · Ground floor',
+      'Unlabeled areas do not borrow a nearby room name'
+    );
+    assert.equal(await page.locator('.indoor-area-highlight').count(), 0);
+    await page.getByRole('button', { name: 'Place indoor pin at map center' }).click();
+    await page.locator('.floor-plan-map .leaflet-marker-icon').waitFor();
+    await page.getByRole('button', { name: '← Back to floor choices', exact: true }).click();
+    assert.equal(await page.locator('#pick-map').isVisible(), true);
+    await page.getByRole('button', { name: 'Ground floor', exact: true }).click();
+    await page.locator('.floor-plan-map .leaflet-marker-icon').waitFor();
+    await page.getByRole('button', { name: 'Ground floor', exact: true }).click();
+    assert.equal(
+      await page.locator('.floor-plan-map .leaflet-marker-icon').count(),
+      1,
+      'Selecting the active floor preserves its pin'
+    );
+    const groundImage = await page
+      .locator('.floor-plan-map .leaflet-image-layer')
+      .getAttribute('src');
+    for (const floor of ['Second floor', 'Third floor', 'Fourth floor · Rooftop theatre']) {
+      await page.getByRole('button', { name: floor, exact: true }).click();
+      await page.locator('.floor-plan-map .leaflet-image-layer').waitFor();
+      assert.notEqual(
+        await page.locator('.floor-plan-map .leaflet-image-layer').getAttribute('src'),
+        groundImage
+      );
+      assert.equal(
+        await page.locator('.floor-plan-map .leaflet-marker-icon').count(),
+        0,
+        'A different floor requires its own pin'
+      );
+    }
+    await page.getByRole('button', { name: 'Place indoor pin at map center' }).click();
+    await page.getByRole('button', { name: '← Back to campus map', exact: true }).click();
+    await openCassFromMap();
+    await page.getByRole('button', { name: 'Fourth floor · Rooftop theatre', exact: true }).click();
+    await page.locator('.floor-plan-map .leaflet-marker-icon').waitFor();
+    assert.equal(
+      await page.locator('.floor-plan-map .leaflet-marker-icon').count(),
+      1,
+      'Returning to the building preserves its selected floor and pin'
+    );
+    await page.getByRole('button', { name: 'Clear pin', exact: true }).click();
+    await page.locator('#pick-map').waitFor();
+    await page.waitForFunction(
+      () => document.querySelector('[data-building-id="old-cass"]')?.getAttribute('d') !== 'M0 0'
+    );
+    await cassOutline.press('Shift');
+    await page.waitForFunction(() =>
+      document.querySelector('.building-hover-overlay')?.classList.contains('is-hovered')
+    );
+    await cassOutline.press('Enter');
+    await page.getByRole('group', { name: 'Choose a floor', exact: true }).waitFor();
+    await page.getByRole('button', { name: '← Back to campus map', exact: true }).click();
+    await page.getByRole('button', { name: 'Clear pin', exact: true }).click();
+    for (const name of [
+      'Main Library Building',
+      'Administration Building',
+      'Gymnasium',
+      'PRISM Building',
+      'Auditorium',
+      'CCS Building',
+    ]) {
+      await page.waitForFunction(() => {
+        const layout = document.querySelector('.location-map-stage');
+        return layout.clientWidth === layout.querySelector('#pick-map').clientWidth;
+      });
+      const building = page.getByRole('button', { name: `Select ${name}`, exact: true });
+      if (name === 'Gymnasium') {
+        await building.hover();
+        await page.waitForTimeout(180);
+        await page.screenshot({ path: path.join(root, 'test-results/gymnasium-hover-grow.png') });
+      } else await building.press('Shift');
+      assert.match(await building.getAttribute('class'), /is-hovered/);
+      await building.press('Enter');
+      assert.equal(await page.locator('#report-form [name=location]').inputValue(), name);
+      assert.equal(
+        await page.locator('.floor-plan-map').count(),
+        0,
+        'Missing floor plans must not reuse another building’s plan'
+      );
+      await page
+        .getByText('Floor plans are not available for this building yet.', { exact: false })
+        .waitFor();
+      if (name === 'Gymnasium')
+        await page.screenshot({
+          path: path.join(root, 'test-results/gymnasium-location-selected.png'),
+        });
+      await page.getByRole('button', { name: 'Use this building', exact: true }).click();
+      await page.locator('#pick-map .leaflet-marker-icon').waitFor();
+      await page.getByRole('button', { name: 'Clear pin', exact: true }).click();
+    }
     const fixture = spawnSync(
       python,
       [
@@ -586,7 +906,7 @@ server.main()`,
     await page.waitForTimeout(350);
     const planWidth = () =>
       page
-        .locator('#pick-map .leaflet-image-layer')
+        .locator('#pick-map img.leaflet-image-layer')
         .evaluate((image) => image.getBoundingClientRect().width);
     const selectedZoom = await planWidth();
     await page
@@ -1035,6 +1355,66 @@ server.main()`,
       () => document.documentElement.scrollWidth > window.innerWidth
     );
     assert.equal(overflow, false, 'Mobile layout overflow');
+    await page.locator('[data-new]').first().click();
+    await openCassFromMap();
+    await page.waitForTimeout(400);
+    const mobileFrame = await page.locator('.location-map-stage').boundingBox();
+    const mobileChoices = await page.locator('.floor-choice-panel').boundingBox();
+    assert.ok(
+      mobileChoices.x >= mobileFrame.x &&
+        mobileChoices.x + mobileChoices.width <= mobileFrame.x + mobileFrame.width &&
+        mobileChoices.y + mobileChoices.height <= mobileFrame.y + mobileFrame.height,
+      'Phone floor choices stay inside the shared map frame'
+    );
+    const mobileCampus = await page.locator('#pick-map').boundingBox();
+    const mobileCampusImage = await page.locator('#pick-map img.leaflet-image-layer').boundingBox();
+    assert.ok(
+      mobileCampusImage.x >= mobileCampus.x - 1 &&
+        mobileCampusImage.y >= mobileCampus.y - 1 &&
+        mobileCampusImage.x + mobileCampusImage.width <= mobileCampus.x + mobileCampus.width + 1 &&
+        mobileCampusImage.y + mobileCampusImage.height <= mobileCampus.y + mobileCampus.height + 1,
+      'The complete campus drawing also fits above floor choices on a phone'
+    );
+    await page.screenshot({
+      path: path.join(root, 'test-results/old-cass-floor-choices-mobile.png'),
+    });
+    await page.getByRole('button', { name: 'Second floor', exact: true }).click();
+    await page.waitForTimeout(400);
+    await pickIndoorPixel(460, 305);
+    assert.equal(
+      await page.locator('#report-form [name=location]').inputValue(),
+      'Old CASS Building · Second floor · Room 215'
+    );
+    await page.locator('.floor-plan-map .leaflet-marker-icon').waitFor();
+    assert.equal(
+      await page.evaluate(() => document.documentElement.scrollWidth > innerWidth),
+      false,
+      'Indoor picker fits a phone'
+    );
+    await page.waitForTimeout(400);
+    await checkFloorFraming();
+    await page.screenshot({ path: path.join(root, 'test-results/old-cass-indoor-mobile.png') });
+    await page.locator('#report-form [name=title]').fill('Old CASS indoor test concern');
+    await page
+      .locator('#report-form [name=description]')
+      .fill('A damaged fixture inside the second-floor room.');
+    await page.locator('#report-form [name=location_details]').fill('Room 215');
+    await page.locator('#report-form button[type=submit]').click();
+    await page.locator('#modal-title').waitFor();
+    await page.locator('[aria-label="Reported indoor location"] .leaflet-marker-icon').waitFor();
+    const indoorSaved = await page.evaluate(async () => {
+      const boot = await (await fetch('/api/bootstrap')).json();
+      return boot.reports.find((report) => report.title === 'Old CASS indoor test concern');
+    });
+    assert.equal(indoorSaved.location, 'Old CASS Building · Second floor · Room 215');
+    assert.equal(indoorSaved.indoor_location.floor_id, 'second');
+    assert.equal(indoorSaved.indoor_location.building_id, 'old-cass');
+    assert.ok(Number.isFinite(indoorSaved.indoor_location.x));
+    await page.locator('.dialog-close').click();
+    await page.reload();
+    await page.getByRole('button', { name: 'View concern →' }).first().click();
+    await page.locator('[aria-label="Reported indoor location"] .leaflet-marker-icon').waitFor();
+    await page.locator('.dialog-close').click();
     // Exercise the shared responsive layout with touch input and every staff workflow.
     const mobile = await browser.newPage({
       viewport: { width: 390, height: 844 },

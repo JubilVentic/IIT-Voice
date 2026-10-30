@@ -127,6 +127,65 @@ small,
   gap: 27px;
 }
 
+.sidebar-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.sidebar-header .brand {
+  min-width: 0;
+}
+
+.sidebar-toggle {
+  flex-shrink: 0;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+}
+
+.sidebar-toggle .icon {
+  width: 20px;
+  height: 20px;
+}
+
+@media (min-width: 701px) {
+  .shell.sidebar-collapsed {
+    grid-template-columns: 76px minmax(0, 1fr);
+  }
+
+  .sidebar-collapsed .sidebar {
+    padding: 24px 12px;
+    align-items: center;
+  }
+
+  .sidebar-collapsed .sidebar .brand,
+  .sidebar-collapsed .sidebar .campus,
+  .sidebar-collapsed .nav-label,
+  .sidebar-collapsed .sidebar-copy {
+    display: none;
+  }
+
+  .sidebar-collapsed .sidebar-header {
+    justify-content: center;
+  }
+
+  .sidebar-collapsed .nav button,
+  .sidebar-collapsed .sidebar-bottom button {
+    justify-content: center;
+    width: 44px;
+    height: 44px;
+    padding: 0;
+  }
+
+  .sidebar-collapsed .sidebar-bottom {
+    padding: 0;
+  }
+}
+
 .brand {
   font-size: 32px;
   letter-spacing: -1.8px;
@@ -942,6 +1001,14 @@ dialog::backdrop {
   backdrop-filter: blur(3px);
 }
 
+@media (min-width: 701px) {
+  dialog.report-dialog {
+    width: min(1200px, calc(100% - 32px));
+    max-height: calc(100vh - 32px);
+    max-height: calc(100dvh - 32px);
+  }
+}
+
 .dialog-close {
   position: sticky;
   top: 0;
@@ -1045,6 +1112,19 @@ details {
 }
 
 @media (max-width: 1000px) {
+  .sidebar-header .brand {
+    font-size: 26px;
+  }
+
+  .sidebar-header .brand small {
+    font-size: 8px;
+    letter-spacing: 1px;
+  }
+
+  .sidebar-toggle {
+    width: 32px;
+    height: 32px;
+  }
   .shell {
     grid-template-columns: 190px minmax(0, 1fr);
   }
@@ -1395,6 +1475,256 @@ details {
   margin-top: 24px;
   padding-top: 24px;
   border-top: 1px solid var(--line);
+}
+
+.indoor-building-outline {
+  cursor: pointer;
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+.map .building-hover-overlay {
+  background: transparent;
+  pointer-events: none;
+}
+
+.building-hover-original,
+.building-hover-image {
+  opacity: 0;
+}
+
+.building-hover-overlay.is-hovered .building-hover-original,
+.building-hover-overlay.is-hovered .building-hover-image {
+  opacity: 1;
+}
+
+.indoor-building-outline.is-hovered,
+.building-hover-overlay.is-hovered .building-hover-image {
+  transform: scale(1.1);
+}
+
+.building-hover-overlay.is-hovered .building-hover-image {
+  filter: drop-shadow(0 1px 2px #0004);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .indoor-building-outline,
+  .building-hover-image {
+    transition: transform 160ms ease-out;
+  }
+}
+
+.indoor-building-outline:focus-visible {
+  outline: none;
+  stroke: #404040;
+  stroke-opacity: 1;
+  stroke-width: 2;
+  fill-opacity: 0.16;
+}
+
+.floor-selector {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 12px 0;
+}
+
+.floor-selector .btn[aria-pressed='true'] {
+  background: var(--maroon);
+  color: white;
+  border-color: var(--maroon);
+}
+
+.report-location-picker {
+  min-width: 0;
+}
+
+.picker-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.location-map-stage {
+  position: relative;
+  height: clamp(500px, 66dvh, 680px);
+  overflow: hidden;
+  isolation: isolate;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: white;
+}
+
+.location-map-stage > .map.pick {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  border-radius: 0;
+}
+
+.location-map-stage.is-browsing > .map.pick {
+  width: 56%;
+}
+
+.location-map-stage.is-floor-focused > .map.pick {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.floor-choice-panel {
+  position: absolute;
+  inset: 0 0 0 56%;
+  z-index: 1;
+  min-width: 0;
+  padding: 20px;
+  overflow-y: auto;
+  background: white;
+}
+
+.floor-preview-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.floor-preview-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  padding: 8px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--ink);
+  text-align: center;
+}
+
+.floor-preview-card:hover,
+.floor-preview-card[aria-pressed='true'] {
+  color: var(--maroon);
+  text-decoration: underline;
+  text-underline-offset: 4px;
+}
+
+.floor-preview-card img {
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  object-fit: contain;
+}
+
+.picker-full-floor {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  padding: 12px;
+  background: white;
+}
+
+.picker-full-floor > .floor-selector {
+  margin: 0 0 8px;
+}
+
+.picker-full-floor .floor-plan-panel {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  margin: 0;
+}
+
+.picker-full-floor .panel-head {
+  margin-bottom: 8px;
+}
+
+.picker-full-floor .map.floor-plan-map {
+  flex: 1;
+  height: auto;
+  min-height: 0;
+  border: 0;
+  border-radius: 0;
+}
+
+.picker-full-floor .map-caption:last-child {
+  display: none;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .location-map-stage > .map.pick {
+    transition: width 320ms ease;
+  }
+
+  .floor-choice-panel {
+    animation: floor-choices-slide 320ms ease-out;
+  }
+
+  .picker-full-floor {
+    animation: floor-focus-slide 360ms ease-out;
+  }
+
+  @keyframes floor-choices-slide {
+    from {
+      opacity: 0;
+      transform: translateX(100%);
+    }
+    to {
+      opacity: 1;
+      transform: translateX(0);
+    }
+  }
+
+  @keyframes floor-focus-slide {
+    from {
+      opacity: 0;
+      transform: translateX(35%) scale(0.85);
+    }
+    to {
+      opacity: 1;
+      transform: translateX(0) scale(1);
+    }
+  }
+}
+
+@media (max-width: 760px) {
+  .location-map-stage {
+    height: 640px;
+  }
+
+  .location-map-stage.is-browsing > .map.pick {
+    width: 100%;
+    height: 40%;
+  }
+
+  .floor-choice-panel {
+    inset: 40% 0 0;
+    padding: 12px;
+  }
+
+  .floor-preview-list {
+    gap: 4px;
+  }
+}
+
+.report-location-picker > h3 {
+  margin: 16px 0 8px;
+}
+
+.floor-plan-panel {
+  margin-top: 16px;
+  min-width: 0;
+}
+
+.floor-plan-panel .panel-head {
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.map.floor-plan-map {
+  height: clamp(340px, 55dvh, 540px);
+  min-height: 340px;
 }
 
 .auth-qr img {

@@ -20,6 +20,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 from dotenv import load_dotenv
 from database import DEMO_SCHEMA, connect_postgres, insert_id
+from indoor_location import indoor_label, normalize_indoor_location
 from photo_analysis import prepare_photo, suggest_category, assess_completion
 from report_categories import (
     CATEGORIES,
@@ -106,6 +107,9 @@ def initialize():
                 (ROOT / "supabase/migrations/202610270001_iit_voice.sql").read_text()
             )
             c.connection.autocommit = False
+            c.execute(
+                "ALTER TABLE reports ADD COLUMN IF NOT EXISTS indoor_location TEXT NOT NULL DEFAULT '{}'"
+            )
             initialize_defaults(c)
         return
     DATA.mkdir(parents=True, exist_ok=True)
@@ -198,6 +202,8 @@ def initialize():
             c.execute("ALTER TABLE reports ADD COLUMN public_title TEXT NOT NULL DEFAULT ''")
         if "location_details" not in [r["name"] for r in c.execute("PRAGMA table_info(reports)")]:
             c.execute("ALTER TABLE reports ADD COLUMN location_details TEXT NOT NULL DEFAULT ''")
+        if "indoor_location" not in [r["name"] for r in c.execute("PRAGMA table_info(reports)")]:
+            c.execute("ALTER TABLE reports ADD COLUMN indoor_location TEXT NOT NULL DEFAULT '{}'")
         if "evidence_round" not in [r["name"] for r in c.execute("PRAGMA table_info(reports)")]:
             c.execute("ALTER TABLE reports ADD COLUMN evidence_round INTEGER NOT NULL DEFAULT 0")
         attachment_columns = {r["name"] for r in c.execute("PRAGMA table_info(attachments)")}
@@ -574,9 +580,14 @@ def report_json(c, u, r, detail=False):
     result["is_mine"] = r["reporter_id"] == u["id"]
     office = c.execute("SELECT name FROM offices WHERE id=?", (r["office_id"],)).fetchone()
     result["office"] = office["name"] if office else None
+    indoor = json.loads(r["indoor_location"]) or None if "indoor_location" in r.keys() else None
+    if indoor:
+        # Exact room names accompany the private indoor point, not the shared campus summary.
+        result["location"] = indoor_label(indoor, include_area=privileged)
     if privileged:
         result["evidence_round"] = r["evidence_round"]
         result["location_details"] = r["location_details"]
+        result["indoor_location"] = indoor
         result["reporter"] = dict(
             c.execute(
                 "SELECT id,name,email,affiliation FROM users WHERE id=?", (r["reporter_id"],)
@@ -949,7 +960,11 @@ class Handler(BaseHTTPRequestHandler):
             b = self.body()
             title, description = field(b, "title", 5, 150), field(b, "description", 10, 5000)
             category, categories = report_categories(b, field(b, "category"))
-            location = field(b, "location", 3, 200)
+            try:
+                indoor = normalize_indoor_location(b.get("indoor_location"))
+            except ValueError as error:
+                raise APIError(400, str(error))
+            location = indoor_label(indoor) if indoor else field(b, "location", 3, 200)
             location_details = field(b, "location_details", 0, 500)
             priority = "normal" if u["role"] == "student" else b.get("priority", "normal")
             check(
@@ -957,6 +972,7 @@ class Handler(BaseHTTPRequestHandler):
                 "Invalid category or priority.",
             )
             lat, lng = b.get("latitude"), b.get("longitude")
+            check(not indoor or lat is not None, "Select the building's campus position as well.")
             check((lat is None) == (lng is None), "Provide both map coordinates.")
             if lat is not None:
                 check(
@@ -967,6 +983,14 @@ class Handler(BaseHTTPRequestHandler):
                     and -90 <= lat <= 90
                     and -180 <= lng <= 180,
                     "Invalid location coordinates.",
+                )
+            if indoor and hasattr(c, "schema"):
+                check(
+                    c.execute(
+                        "SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='reports' AND column_name='indoor_location'"
+                    ).fetchone(),
+                    "Indoor location storage is not initialized. Apply the indoor-location database migration.",
+                    503,
                 )
             stamp = now()
             rid = insert_id(
@@ -987,6 +1011,10 @@ class Handler(BaseHTTPRequestHandler):
                 ),
             )
             c.execute("UPDATE reports SET categories=? WHERE id=?", (json.dumps(categories), rid))
+            if indoor:
+                c.execute(
+                    "UPDATE reports SET indoor_location=? WHERE id=?", (json.dumps(indoor), rid)
+                )
             event(c, rid, u["id"], "created", "Report submitted for validation.")
             audit(c, u["id"], "report.created", str(rid))
             for admin in c.execute(

@@ -232,6 +232,20 @@ function navigation(user) {
 
 function Shell({ children, logout }) {
   const { user, data, page, setPage } = useVoice();
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    try {
+      return localStorage.getItem('iit-voice-sidebar-collapsed') === 'true';
+    } catch {
+      return false;
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem('iit-voice-sidebar-collapsed', String(sidebarCollapsed));
+    } catch {
+      /* Navigation still works when browser storage is unavailable. */
+    }
+  }, [sidebarCollapsed]);
   const nav = navigation(user),
     mobileMenu = useRef(null);
   const unread = data.notifications.filter((n) => !n.is_read).length;
@@ -251,13 +265,26 @@ function Shell({ children, logout }) {
     .slice(0, 2)
     .join('');
   return (
-    <div className="shell">
+    <div className={`shell ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`}>
       <aside className="sidebar">
-        <Brand />
+        <div className="sidebar-header">
+          <Brand />
+          <button
+            type="button"
+            className="btn sidebar-toggle"
+            aria-label={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+            title={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+            aria-expanded={!sidebarCollapsed}
+            aria-controls="desktop-navigation"
+            onClick={() => setSidebarCollapsed((value) => !value)}
+          >
+            <Icon name="sidebar" />
+          </button>
+        </div>
         <div className="campus">
           MSU–IIT<small>Iligan City, Philippines</small>
         </div>
-        <nav className="nav" aria-label="Main navigation">
+        <nav className="nav" id="desktop-navigation" aria-label="Main navigation">
           {nav
             .filter(([id]) => id !== 'notifications')
             .map(([id, label, icon]) => (
@@ -267,20 +294,30 @@ function Shell({ children, logout }) {
                 data-page={id}
                 className={id === page ? 'active' : ''}
                 aria-current={id === page ? 'page' : undefined}
+                aria-label={label}
+                title={label}
                 onClick={() => setPage(id)}
               >
                 <Icon name={icon} />
-                {label}
+                <span className="nav-label">{label}</span>
               </button>
             ))}
         </nav>
         <div className="sidebar-bottom">
-          A better campus starts
-          <br />
-          with a voice.
-          <br />
-          <button className="btn link" data-logout onClick={logout}>
-            <Icon name="logout" /> Sign out
+          <span className="sidebar-copy">
+            A better campus starts
+            <br />
+            with a voice.
+            <br />
+          </span>
+          <button
+            className="btn link"
+            data-logout
+            aria-label="Sign out"
+            title="Sign out"
+            onClick={logout}
+          >
+            <Icon name="logout" /> <span className="nav-label">Sign out</span>
           </button>
         </div>
       </aside>
@@ -514,7 +551,10 @@ export default function App() {
         </Shell>
       )}
       {modal && user && data && (
-        <Dialog onClose={() => setModal(null)}>
+        <Dialog
+          className={modal.type === 'new' ? 'report-dialog' : ''}
+          onClose={() => setModal(null)}
+        >
           {modal.type === 'new' ? <NewReport /> : <ReportDetails key={modal.id} id={modal.id} />}
         </Dialog>
       )}
