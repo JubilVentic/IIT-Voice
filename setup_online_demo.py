@@ -90,6 +90,10 @@ def setup():
         c.execute(
             "ALTER TABLE reports ADD COLUMN IF NOT EXISTS indoor_location TEXT NOT NULL DEFAULT '{}'"
         )
+        c.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_guest INTEGER NOT NULL DEFAULT 0")
+        c.execute(
+            "ALTER TABLE reports ADD COLUMN IF NOT EXISTS anonymous INTEGER NOT NULL DEFAULT 0"
+        )
         server.initialize_defaults(c)
     server.ensure_demo_accounts(connect_db=factory)
     with factory() as c:

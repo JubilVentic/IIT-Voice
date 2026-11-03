@@ -31,7 +31,7 @@ export function Overview() {
     return (
       <>
         <Hero
-          title={`Hello, ${name}.`}
+          title={user.is_guest ? 'Your reporting workspace' : `Hello, ${name}.`}
           question="How can we improve your campus?"
           sub="Report a concern and follow the progress."
           action={

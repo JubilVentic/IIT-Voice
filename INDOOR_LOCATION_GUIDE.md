@@ -14,19 +14,25 @@ The report dialog has three steps: **Location → Evidence photo → Report deta
 2. Click or tap the Old CASS footprint on the campus map.
 3. Within one map frame, the campus map shifts left and floor-plan previews slide in on the right. On phones, both views share the frame vertically. There is no separate floor-choice card. The campus view fits the entire site plan into its available space.
 4. Choose a preview: that floor slides to the center and fills the frame. It opens fitted to the visible drawing, excluding its hidden page margins. You can zoom, use **Fit floor**, or pan and use **Pin at center**.
-5. Click the room, corridor, or area on the plan. Its mapped name fills the location, for example **Old CASS Building · Ground floor · Room 117**, and the dialog automatically advances to Evidence photo. Choosing only a building or floor does not complete an indoor pin.
+5. Click the room, corridor, or area on the plan. Its mapped name fills the location, for example **Old CASS Building · Ground floor · Room 117**, and the dialog automatically advances to Evidence photo with a mouse. On touch screens it stays on the map so the reporter can inspect and refine the pin, then tap **Continue to evidence**. Choosing only a building or floor does not complete an indoor pin.
 6. Add an evidence photo, or continue without one. Photo screening and AI suggestions run before continuing. A blocked photo must be removed or replaced. Existing manual-review/unavailable-screening handling is unchanged.
 7. Choose **Continue to report details**. Review and edit the suggested title, primary/additional categories, description, location, and extra directions. Submit for validation only from this final step.
 
-**Back to location**, **Back to evidence**, and **Change location** move between steps while preserving the selected image, AI analysis, pin, and typed fields. To refine a pin, go back to Location and click or drag it; a completed selection advances to evidence again. Merely navigating back does not clear or submit the draft.
+**Back to location**, **Back to evidence**, and **Change location** move between steps while preserving the selected image, AI analysis, pin, and typed fields. To refine a pin, go back to Location and click or drag it. A mouse selection advances to evidence again; a touch selection waits for **Continue to evidence**. Merely navigating back does not clear or submit the draft.
 
 Inside the Location step, **Back to floor choices** returns to the campus map and in-map previews, preserving the floor and indoor pin. The campus map stays mounted; returning to floor choices fits the whole campus again. **Back to campus map** dismisses the floor panel. Map views are preserved while their wizard step is hidden.
 
-Outdoor pins and a successful **Use current location** also advance to evidence. For buildings without supplied floor plans, **Use this building** confirms the building-level location; extra floor/room details can be entered in the final step. **Continue without a pin** preserves the existing ability to report a written location: it clears the map selection and the final step requires a campus location. Evidence remains optional.
+Outdoor pins and a successful **Use current location** follow the same mouse/touch confirmation behavior. For buildings without supplied floor plans, **Use this building** confirms the building-level location; extra floor/room details can be entered in the final step. **Continue without a pin** preserves the existing ability to report a written location: it clears the map selection and the final step requires a campus location. Evidence remains optional.
 
 Changing floors clears the previous floor's pin. Placing an outdoor pin or using current location replaces an indoor selection; **Clear pin** clears both. An explicit photo-geotag selection retains its existing behavior and does not replace an indoor pin.
 
 The reporter, Main Admin, Validator, and authorized responsible-office staff can reopen the report and inspect its saved floor plan and pin. Other campus members receive only the approved shared summary, without the private indoor coordinates.
+
+## Phone map controls
+
+The initial campus view fits the whole supplied plan, with a shorter landscape-shaped frame on phones. It no longer forces a closer zoom after fitting. A phone layout resize refits the campus; zooming, panning, and returning from Evidence remain available. **Fit campus** restores the complete plan after manual zoom.
+
+Touch pins have a 48 × 56 pixel hit area around the same visible pin, with the tip anchored to the selected position. Use one finger to tap a point or drag a pin, drag elsewhere to pan, and use two fingers to zoom. Panning and pinch zoom do not place a new pin. Touch taps do not trigger mouse-only roof enlargement. After adjusting a location, use the sticky **Continue to evidence** control to confirm it.
 
 ## Room and area identification
 

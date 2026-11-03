@@ -9,13 +9,12 @@ Requirements: Node.js 22.12+ or 24+, npm, and Python 3.9+. The Python backend us
 ```sh
 npm ci
 python3 -m pip install -r requirements.txt
-python3 -B server.py --seed-demo
-npm start
+npm run dev
 ```
 
-`npm start` builds the React frontend into `dist/` and starts the Python API at port 8000. If your database already contains accounts, skip `--seed-demo`; your existing accounts, password, reports, and sessions continue to work.
+`npm run dev` starts Vite at port 5173 and the Python API at port 8000. Configure Google sign-in using [GOOGLE_SIGN_IN_SETUP.md](GOOGLE_SIGN_IN_SETUP.md), or use **Continue anonymously**. Email/password sign-in and account requests have been removed. Existing profiles, reports, roles, and sessions are retained.
 
-Open **http://127.0.0.1:8000**. Seeding prints a randomly generated password shared by these sample accounts:
+Open **http://127.0.0.1:5173**. For isolated local testing, set `IIT_VOICE_DEMO_LOGIN=1` in `.env.local` before starting the server. Use the demo buttons to enter sample accounts such as:
 
 | Account                    | Access             |
 | -------------------------- | ------------------ |
@@ -24,16 +23,16 @@ Open **http://127.0.0.1:8000**. Seeding prints a randomly generated password sha
 | `student@iitvoice.local`   | Student campus app |
 | `faculty@iitvoice.local`   | Faculty campus app |
 
-Seeding only works on an empty database. Sample concerns and pins are illustrative and do not represent university records. The password is not stored in source code. If you lose it during a local demonstration, create another Main Admin account using the command below and an unused email.
+Local demo mode creates sample identities without reports or pins in a separate SQLite database. The legacy `--seed-demo` command adds illustrative concerns only to an empty configured database; it is not needed for demo buttons. Sample data does not represent university records.
 
 For an empty installation without demo accounts:
 
 ```sh
-python3 -B server.py --create-admin your-email@example.edu
+python3 -B server.py --create-admin your.name@g.msuiit.edu.ph
 npm start
 ```
 
-The command prompts for name and password. Requests to register through the application always create an unverified campus-member account. A Main Admin must verify affiliation before sign-in is allowed. Email entry is **not** proof of university membership. The current verification mechanism is a manual admin decision; there is no university directory or SSO integration.
+The command prompts for a name and provisions an approved Main Admin profile. Enter through **Continue with Google** using that same university email; no IIT Voice password is requested. New university Google users confirm their name and affiliation and receive reporter access immediately. Main Admin assigns administrative permissions. Existing pending or disabled accounts remain restricted. Anonymous reporters choose a self-declared affiliation without an account. `npm start` builds the frontend and serves the combined application at port 8000; configure `IIT_VOICE_PUBLIC_URL` for the origin you actually use.
 
 ## React development
 
@@ -49,7 +48,7 @@ Open **http://127.0.0.1:5173**. Vite proxies `/api` requests to Python on port 8
 
 ## What works
 
-- Cookie-based login, logout, password hashing, login throttling, and CSRF checks.
+- University Google sign-in, anonymous guest access, HttpOnly sessions, logout, authentication rate limits, and CSRF checks.
 - Separate student/campus-member, Validator Admin, and Main Admin interfaces, with server-enforced permissions. Faculty and staff are campus members unless explicitly granted an admin role.
 - Report submission with one primary category and additional applicable categories, admin-assessed priority, written location, optional geographic pin, and optional PNG/JPEG evidence.
 - The cleaned **MSU–IIT Tibanga site development plan** replaces Google Maps and OpenStreetMap tiles in all map views, including location selection and report concentrations. The drawing-only 3594 × 2049 PNG is bundled locally, so the basemap needs no external map requests. **Report pins** is the default; **Campus plan** hides reports to explore the drawing. **Fit campus** restores the whole-campus view.
@@ -139,7 +138,7 @@ Supabase Postgres is supported through the server-side `DATABASE_URL` setting. L
 
 ## University deployment work
 
-This is a runnable pilot, not a completed production university deployment. Before a rollout, replace the standard-library development HTTP server with a supported production server/framework; configure HTTPS, university SSO or an approved affiliation-verification process, password recovery, managed backups, retention rules, and incident monitoring. Confirm emergency routing, actual participating offices, campus map boundaries, accessibility, and handling of sensitive cases with the university. Notifications are in-app only; email/SMS delivery, due-date escalation, and real university-record integration are not implemented.
+This is a runnable pilot, not a completed production university deployment. Before a rollout, replace the standard-library development HTTP server with a supported production server/framework; configure HTTPS, production Google OAuth settings, approved administrative access, managed backups, retention rules, and incident monitoring. Confirm emergency routing, actual participating offices, campus map boundaries, accessibility, and handling of sensitive cases with the university. Notifications are in-app only; email/SMS delivery, due-date escalation, and real university-record integration are not implemented.
 
 Evidence has size/type restrictions and remains private, but a production upload pipeline should decode/re-encode images, remove location metadata, and scan files. The local database and its backups must be access-restricted. Audit history is append-only through the API, not tamper-proof against database operators. Account management changes require an explicit confirmation in the interface.
 
@@ -217,7 +216,7 @@ Set `IIT_VOICE_DEMO_LOGIN=1` in `.env.local` and restart the development server 
 
 The login page also includes a downloadable QR code for `https://iit-voice.vercel.app/`. Its PNG and SVG source assets are in `src/assets/iit-voice-qr.*`. See [DEMO_AND_QR_GUIDE.md](DEMO_AND_QR_GUIDE.md) for usage and the separate online demo setup plan.
 
-Local demo sign-in defaults to disabled and requires a loopback-bound backend and local requests. `IIT_VOICE_DEMO_LOGIN=0` disables local demo access. Optional online demos use a separate `iit_voice_demo` schema and restricted `DEMO_DATABASE_URL`, prepared by `python3 -B setup_online_demo.py`. The online demo buttons and regular sign-in share the same page; demo sessions use demo tables, while normal sessions use `iit_voice`. Each demo connection is checked for lack of regular-schema access and elevated privileges. Removing `DEMO_DATABASE_URL` disables online demo sessions without falling back to regular tables. See [DEMO_AND_QR_GUIDE.md](DEMO_AND_QR_GUIDE.md). Registration cannot mark an account as a demo account.
+Local demo sign-in defaults to disabled and requires a loopback-bound backend and local requests. `IIT_VOICE_DEMO_LOGIN=0` disables local demo access. Optional online demos use a separate `iit_voice_demo` schema and restricted `DEMO_DATABASE_URL`, prepared by `python3 -B setup_online_demo.py`. The online demo buttons and regular sign-in share the same page; demo sessions use demo tables, while normal sessions use `iit_voice`. Each demo connection is checked for lack of regular-schema access and elevated privileges. Removing `DEMO_DATABASE_URL` disables online demo sessions without falling back to regular tables. See [DEMO_AND_QR_GUIDE.md](DEMO_AND_QR_GUIDE.md). Google profile completion and anonymous access cannot mark an account as a demo account.
 
 Photo analysis also drafts the editable **Describe what you observed** field from visible conditions, without inventing a time, location, cause or eyewitness claim. Blank descriptions (or an unchanged prior AI draft) are filled automatically; user edits are preserved on re-analysis. **Use AI description draft** explicitly replaces the current text when desired. The final edited description is submitted normally, while the original AI draft remains private attachment metadata for validators. Failed/blocked/unclear analysis does not invent a description.
 
@@ -225,13 +224,17 @@ AI category analysis evaluates all nine categories independently and selects eve
 
 ## Responsible Office access and handoff
 
+For university-only sign-in and both anonymous reporting options, see [University sign-in and anonymous reporting](ACCESS_AND_ANONYMOUS_GUIDE.md). That guide also lists the Supabase migration and the steps for disabling demo access in the final release.
+
+For **Continue with Google**, see [Google sign-in setup](GOOGLE_SIGN_IN_SETUP.md). Google is the only identified sign-in method and preserves existing profiles, approval status, and role permissions. Anonymous access is available independently. The Google button explains the setup requirement until configured.
+
 Main Admin assigns the **Responsible Office** role and selects an office in **Users & access**. Each account belongs to one office. Validators submit **Valid — assign for action** or **Not valid — reject concern**, with a note. A valid decision requires a responsible office and an assigned admin from that office (or a Main Admin). Validators can select Low, Normal, High or Urgent while submitting validation; the choice is recorded in activity and the audit log, shared with the reporter and assigned office, and used in report/map filters. Validators cannot edit categories, publication, work progress, comments or evidence, and cannot revise completed validation. Main Admin manages later urgency changes.
 
 Office dashboards, report lists, maps, report URLs, evidence downloads and notifications are restricted to the account's office and handed-off statuses. Public campus visibility does not expand office access. The office can post comments and screened evidence, start work, and mark it resolved. It cannot validate, change assignments/categories/priority, publish, close or reopen concerns. Main Admin controls final closure, reopening and any reassignment. Moving a report to a new office immediately removes the previous office's report, attachment and notification access. Changing an account's office revokes existing sessions.
 
 Validated reports remain restricted until Main Admin reviews their public title/summary and publishes them. Validation alone never exposes raw descriptions or evidence to campus users. The users-table role constraint is migrated transactionally, preserving account IDs, passwords, sessions and existing report references; no existing accounts are silently promoted.
 
-Local demo mode includes **Physical Plant** and **ICT** office buttons in addition to the original four sample accounts. Existing seeded demo installations receive these two sample office accounts automatically; no report is reassigned or created during that upgrade. Fresh demo seeds use the printed sample password for all six accounts. University office membership and routing defaults remain proposed configuration for verification.
+Local demo mode includes **Physical Plant** and **ICT** office buttons in addition to the original four sample accounts. Existing seeded demo installations receive these two sample office accounts automatically; no report is reassigned or created during that upgrade. Use the dedicated demo buttons for all six accounts. University office membership and routing defaults remain proposed configuration for verification.
 
 ## Completion evidence
 

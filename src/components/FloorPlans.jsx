@@ -122,7 +122,7 @@ export function FloorPlan({ location, onPick }) {
       marker.current.setLatLng(point);
     } else
       marker.current = L.marker(point, {
-        icon: pinIcon(),
+        icon: pinIcon({ editable }),
         draggable: editable,
         autoPan: true,
         title: editable ? 'Drag to adjust indoor location' : 'Reported indoor location',

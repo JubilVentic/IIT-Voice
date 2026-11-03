@@ -20,12 +20,20 @@ CREATE TABLE IF NOT EXISTS users (
   active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
   created_at TEXT NOT NULL,
   is_demo INTEGER NOT NULL DEFAULT 0 CHECK (is_demo IN (0, 1)),
+  is_guest INTEGER NOT NULL DEFAULT 0 CHECK (is_guest IN (0, 1)),
+  google_subject TEXT UNIQUE,
   office_id BIGINT REFERENCES offices(id)
 );
 CREATE TABLE IF NOT EXISTS sessions (
   token_hash TEXT PRIMARY KEY,
   user_id BIGINT NOT NULL REFERENCES users(id),
   csrf TEXT NOT NULL,
+  expires DOUBLE PRECISION NOT NULL
+);
+CREATE TABLE IF NOT EXISTS oauth_flows (
+  token_hash TEXT PRIMARY KEY,
+  verifier TEXT NOT NULL,
+  profile TEXT NOT NULL DEFAULT '{}',
   expires DOUBLE PRECISION NOT NULL
 );
 CREATE TABLE IF NOT EXISTS routing (
@@ -53,6 +61,7 @@ CREATE TABLE IF NOT EXISTS reports (
   assigned_to BIGINT REFERENCES users(id),
   duplicate_of BIGINT REFERENCES reports(id),
   evidence_round INTEGER NOT NULL DEFAULT 0,
+  anonymous INTEGER NOT NULL DEFAULT 0 CHECK (anonymous IN (0, 1)),
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -113,6 +122,7 @@ CREATE INDEX IF NOT EXISTS notifications_user ON notifications(user_id, id);
 -- connects from Python and the existing application checks every role/action.
 ALTER TABLE users ENABLE ROW LEVEL SECURITY;
 ALTER TABLE sessions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE oauth_flows ENABLE ROW LEVEL SECURITY;
 ALTER TABLE offices ENABLE ROW LEVEL SECURITY;
 ALTER TABLE routing ENABLE ROW LEVEL SECURITY;
 ALTER TABLE reports ENABLE ROW LEVEL SECURITY;

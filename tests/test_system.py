@@ -11,7 +11,8 @@ import unittest
 from unittest.mock import patch
 from pathlib import Path
 from urllib.error import HTTPError
-from urllib.request import HTTPCookieProcessor, Request, build_opener
+from urllib.request import HTTPCookieProcessor, HTTPRedirectHandler, Request, build_opener
+from urllib.parse import parse_qs, urlencode, urlsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import server
@@ -21,10 +22,17 @@ server.DATABASE_URL = ""
 from test_photo_analysis import sample_photo
 
 
+class NoRedirect(HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
 class Client:
-    def __init__(self, base):
+    def __init__(self, base, redirects=True):
         self.base, self.csrf = base, ""
-        self.opener = build_opener(HTTPCookieProcessor(http.cookiejar.CookieJar()))
+        self.opener = build_opener(
+            HTTPCookieProcessor(http.cookiejar.CookieJar()), *([] if redirects else [NoRedirect()])
+        )
 
     def request(self, path, method="GET", body=None, csrf=True, extra_headers=None):
         headers = {"Content-Type": "application/json"}
@@ -41,6 +49,7 @@ class Client:
             result = self.opener.open(req)
         except HTTPError as e:
             result = e
+        self.last_headers = result.headers
         payload = result.read()
         data = (
             json.loads(payload)
@@ -50,9 +59,31 @@ class Client:
         return result.code, data
 
     def login(self, email):
-        status, result = self.request(
-            "/api/login", "POST", {"email": email, "password": "test-password-for-iit-voice"}
-        )
+        # Exercise the supported OAuth path with a verified fixture identity, never live Google.
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "SUPABASE_URL": "https://project-ref.supabase.co",
+                    "SUPABASE_PUBLISHABLE_KEY": "publishable-test-key",
+                    "IIT_VOICE_PUBLIC_URL": self.base,
+                    "VERCEL": "",
+                },
+            ),
+            patch(
+                "google_auth.exchange_identity",
+                return_value={
+                    "email": email.lower(),
+                    "sub": "test-google:" + email.lower(),
+                    "name": "Fixture Google identity",
+                },
+            ),
+        ):
+            status, result = self.request("/api/auth/google/start", "POST", {})
+            assert status == 200, result
+            callback = urlsplit(parse_qs(urlsplit(result["url"]).query)["redirect_to"][0])
+            self.request(callback.path + "?" + callback.query + "&code=fixture-code")
+        status, result = self.request("/api/me")
         assert status == 200, result
         self.csrf = result["csrf"]
         return result["user"]
@@ -143,7 +174,7 @@ class SchemaMigrationTests(unittest.TestCase):
                 server.DATA, server.DB = Path(directory), Path(directory) / "migration.sqlite3"
                 server.initialize()
                 uid = server.create_account(
-                    "migration@test.local",
+                    "migration@g.msuiit.edu.ph",
                     "Existing Student",
                     "student",
                     "test-password-for-iit-voice",
@@ -186,7 +217,7 @@ class SchemaMigrationTests(unittest.TestCase):
                 server.initialize()
                 server.initialize()
                 office_uid = server.create_account(
-                    "office-migration@test.local",
+                    "office-migration@g.msuiit.edu.ph",
                     "New Office",
                     "office",
                     "test-password-for-iit-voice",
@@ -228,10 +259,10 @@ class SystemTests(unittest.TestCase):
         server.DB = server.DATA / "test.sqlite3"
         server.initialize()
         for email, role in [
-            ("admin@test.local", "admin"),
-            ("validator@test.local", "validator"),
-            ("student@test.local", "student"),
-            ("other@test.local", "student"),
+            ("admin@g.msuiit.edu.ph", "admin"),
+            ("validator@g.msuiit.edu.ph", "validator"),
+            ("student@g.msuiit.edu.ph", "student"),
+            ("other@g.msuiit.edu.ph", "student"),
         ]:
             server.create_account(
                 email,
@@ -241,10 +272,14 @@ class SystemTests(unittest.TestCase):
                 "Student" if role == "student" else "Staff",
             )
         server.create_account(
-            "plant@test.local", "Plant Admin", "office", "test-password-for-iit-voice", office_id=2
+            "plant@g.msuiit.edu.ph",
+            "Plant Admin",
+            "office",
+            "test-password-for-iit-voice",
+            office_id=2,
         )
         server.create_account(
-            "ict@test.local", "ICT Admin", "office", "test-password-for-iit-voice", office_id=4
+            "ict@g.msuiit.edu.ph", "ICT Admin", "office", "test-password-for-iit-voice", office_id=4
         )
         cls.http = server.ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
         cls.thread = threading.Thread(target=cls.http.serve_forever, daemon=True)
@@ -291,20 +326,29 @@ class SystemTests(unittest.TestCase):
         )
         self.completion_ai = completion_patch.start()
         self.addCleanup(completion_patch.stop)
-        env_patch = patch.dict(os.environ, {"GEMINI_API_KEY": "test-key"})
+        env_patch = patch.dict(
+            os.environ,
+            {
+                "GEMINI_API_KEY": "test-key",
+                "SUPABASE_URL": "https://project-ref.supabase.co",
+                "SUPABASE_PUBLISHABLE_KEY": "publishable-test-key",
+                "IIT_VOICE_PUBLIC_URL": self.base,
+            },
+        )
         env_patch.start()
         self.addCleanup(env_patch.stop)
         with server.connect() as c:
             c.execute("DELETE FROM photo_analyses")
             c.execute("DELETE FROM login_limits WHERE key LIKE 'photo-ai:%'")
+            c.execute("DELETE FROM login_limits WHERE key LIKE 'guest:%'")
         self.student, self.other, self.validator, self.admin = [Client(self.base) for _ in range(4)]
-        self.student.login("student@test.local")
-        self.other.login("other@test.local")
-        self.validator.login("validator@test.local")
-        self.admin.login("admin@test.local")
+        self.student.login("student@g.msuiit.edu.ph")
+        self.other.login("other@g.msuiit.edu.ph")
+        self.validator.login("validator@g.msuiit.edu.ph")
+        self.admin.login("admin@g.msuiit.edu.ph")
         self.plant, self.ict = Client(self.base), Client(self.base)
-        self.plant_user = self.plant.login("plant@test.local")
-        self.ict_user = self.ict.login("ict@test.local")
+        self.plant_user = self.plant.login("plant@g.msuiit.edu.ph")
+        self.ict_user = self.ict.login("ict@g.msuiit.edu.ph")
 
     def report(self, **extra):
         status, result = self.student.request(
@@ -338,37 +382,29 @@ class SystemTests(unittest.TestCase):
             },
         )
 
-    def test_registration_cannot_grant_admin_and_requires_verification(self):
+    def test_password_login_and_registration_are_removed_without_creating_accounts(self):
         client = Client(self.base)
-        status, result = client.request(
-            "/api/register",
-            "POST",
-            {
-                "name": "Pending Person",
-                "email": "pending@test.local",
-                "password": "test-password-for-iit-voice",
-                "affiliation": "Student",
-                "role": "admin",
-                "verified": 1,
-            },
-        )
-        self.assertEqual(status, 201, result)
-        status, result = client.request(
-            "/api/login",
-            "POST",
-            {"email": "pending@test.local", "password": "test-password-for-iit-voice"},
-        )
-        self.assertEqual(status, 403)
-        status, users = self.admin.request("/api/admin/users")
-        pending = next(u for u in users if u["email"] == "pending@test.local")
-        self.assertEqual(pending["role"], "student")
-        self.assertEqual(pending["verified"], 0)
-        status, _ = self.admin.request(
-            "/api/admin/users/" + str(pending["id"]), "PATCH", {"verified": 1}
-        )
-        self.assertEqual(status, 200)
-        client.login("pending@test.local")
-        self.assertEqual(client.request("/api/admin/users")[0], 403)
+        with server.connect() as c:
+            count = c.execute("SELECT count(*) FROM users").fetchone()[0]
+        for path in ("/api/login", "/api/register"):
+            for email in ("student@g.msuiit.edu.ph", "someone@gmail.com"):
+                status, result = client.request(
+                    path,
+                    "POST",
+                    {
+                        "name": "Untrusted Request",
+                        "email": email,
+                        "password": "test-password-for-iit-voice",
+                        "affiliation": "Student",
+                        "role": "admin",
+                        "verified": 1,
+                    },
+                )
+                self.assertEqual(status, 410, result)
+                self.assertIn("Continue with Google", result["error"])
+                self.assertEqual(client.request("/api/me")[0], 401)
+        with server.connect() as c:
+            self.assertEqual(c.execute("SELECT count(*) FROM users").fetchone()[0], count)
 
     def test_role_and_csrf_enforcement(self):
         self.assertEqual(self.student.request("/api/admin/users")[0], 403)
@@ -378,6 +414,276 @@ class SystemTests(unittest.TestCase):
             self.student.request("/api/reports", "POST", {"title": "Test"}, csrf=False)[0], 403
         )
         self.assertEqual(Client(self.base).request("/api/bootstrap")[0], 401)
+
+    def test_admin_provisioning_accepts_only_the_university_email_domain(self):
+        for email in (
+            "someone@gmail.com",
+            "a@msuiit.edu.ph",
+            "a@g.msuiit.edu.ph.evil.com",
+            "a@sub.g.msuiit.edu.ph",
+            "a@g.msuiit.edu.ph@evil.com",
+        ):
+            with self.subTest(email=email), self.assertRaises(server.APIError):
+                server.university_email(email)
+        self.assertEqual(
+            server.university_email("STUDENT@G.MSUIIT.EDU.PH"), "student@g.msuiit.edu.ph"
+        )
+
+    def start_google(self, client):
+        code, result = client.request("/api/auth/google/start", "POST", {})
+        self.assertEqual(code, 200, result)
+        authorization = parse_qs(urlsplit(result["url"]).query)
+        callback = authorization["redirect_to"][0]
+        return urlsplit(callback).path + "?" + urlsplit(callback).query + "&code=one-use-code"
+
+    def test_google_login_binds_state_and_keeps_the_existing_approved_role(self):
+        client, attacker = Client(self.base, redirects=False), Client(self.base, redirects=False)
+        callback = self.start_google(client)
+        with patch(
+            "google_auth.exchange_identity",
+            return_value={
+                "email": "admin@g.msuiit.edu.ph",
+                "sub": "test-google:admin@g.msuiit.edu.ph",
+                "name": "Not a new account",
+            },
+        ) as exchange:
+            self.assertEqual(attacker.request(callback)[0], 303)
+            exchange.assert_not_called()
+            self.assertEqual(client.request(callback.replace("flow=", "flow=wrong"))[0], 303)
+            exchange.assert_not_called()
+            # The bad state did not consume the original flow; a fresh start replaces its cookie.
+            callback = self.start_google(client)
+            self.assertEqual(client.request(callback)[0], 303)
+            self.assertEqual(client.last_headers["Location"], "/")
+            me = client.request("/api/me")[1]
+            self.assertEqual(me["user"]["role"], "admin")
+            self.assertEqual(me["user"]["email"], "admin@g.msuiit.edu.ph")
+            self.assertEqual(client.request(callback)[0], 303)
+            self.assertEqual(exchange.call_count, 1)
+            for cookie in client.last_headers.get_all("Set-Cookie"):
+                self.assertNotIn("one-use-code", cookie)
+        with server.connect() as c:
+            self.assertEqual(
+                c.execute(
+                    "SELECT count(*) FROM users WHERE email='admin@g.msuiit.edu.ph'"
+                ).fetchone()[0],
+                1,
+            )
+
+    def test_first_google_account_gets_reporter_access_without_admin_approval_or_password(self):
+        client = Client(self.base, redirects=False)
+        with patch(
+            "google_auth.exchange_identity",
+            return_value={
+                "email": "first-google@g.msuiit.edu.ph",
+                "sub": "first-google-subject",
+                "name": "Google Person",
+            },
+        ):
+            self.assertEqual(client.request(self.start_google(client))[0], 303)
+        self.assertEqual(client.last_headers["Location"], "/?google=complete")
+        self.assertEqual(
+            client.request("/api/auth/google/profile")[1],
+            {"email": "first-google@g.msuiit.edu.ph", "name": "Google Person"},
+        )
+        self.assertEqual(client.request("/api/me")[0], 401)
+        self.assertEqual(
+            client.request(
+                "/api/auth/google/complete",
+                "POST",
+                {"name": "Google Person", "affiliation": "Admin"},
+            )[0],
+            400,
+        )
+        self.assertEqual(
+            client.request(
+                "/api/auth/google/complete",
+                "POST",
+                {
+                    "name": "Google Person",
+                    "affiliation": "Faculty",
+                    "role": "admin",
+                    "verified": 1,
+                    "email": "injected@g.msuiit.edu.ph",
+                },
+            )[0],
+            200,
+        )
+        self.assertEqual(client.request("/api/auth/google/profile")[0], 400)
+        users = self.admin.request("/api/admin/users")[1]
+        account = next(user for user in users if user["email"] == "first-google@g.msuiit.edu.ph")
+        self.assertEqual(
+            (account["role"], account["verified"], account["affiliation"]),
+            ("student", 1, "Faculty"),
+        )
+        session = client.request("/api/me")[1]
+        self.assertEqual(session["user"]["id"], account["id"])
+        self.assertEqual(session["user"]["role"], "student")
+        self.assertTrue(session["csrf"])
+        self.assertEqual(client.request("/api/bootstrap")[0], 200)
+        self.assertEqual(client.request("/api/admin/users")[0], 403)
+        self.assertEqual(
+            client.request(
+                "/api/login",
+                "POST",
+                {"email": account["email"], "password": "test-password-for-iit-voice"},
+            )[0],
+            410,
+        )
+        with patch(
+            "google_auth.exchange_identity",
+            return_value={
+                "email": account["email"],
+                "sub": "first-google-subject",
+                "name": "Google Person",
+            },
+        ):
+            self.assertEqual(client.request(self.start_google(client))[0], 303)
+            self.assertEqual(client.last_headers["Location"], "/")
+            self.assertEqual(client.request("/api/me")[1]["user"]["id"], account["id"])
+
+            # Google sign-in must not override later access restrictions imposed by Main Admin.
+            for changes in ({"verified": 0}, {"verified": 1, "active": 0}):
+                self.assertEqual(
+                    self.admin.request(f"/api/admin/users/{account['id']}", "PATCH", changes)[0],
+                    200,
+                )
+                blocked = Client(self.base, redirects=False)
+                self.assertEqual(blocked.request(self.start_google(blocked))[0], 303)
+                self.assertIn("pending", blocked.last_headers["Location"])
+                self.assertEqual(blocked.request("/api/me")[0], 401)
+
+    def test_google_setup_cancellation_expiry_and_origins_fail_closed(self):
+        client = Client(self.base, redirects=False)
+        self.assertEqual(
+            client.request(
+                "/api/auth/google/start",
+                "POST",
+                {},
+                extra_headers={"Origin": "https://evil.example"},
+            )[0],
+            403,
+        )
+        with patch.dict(os.environ, {"SUPABASE_PUBLISHABLE_KEY": ""}):
+            self.assertEqual(client.request("/api/auth/options")[1], {"google": False})
+            self.assertEqual(client.request("/api/auth/google/start", "POST", {})[0], 503)
+        callback = self.start_google(client)
+        with patch("google_auth.exchange_identity") as exchange:
+            self.assertEqual(client.request(callback + "&error=access_denied")[0], 303)
+            self.assertIn("cancelled", client.last_headers["Location"])
+            exchange.assert_not_called()
+            callback = self.start_google(client)
+            with server.connect() as c:
+                c.execute("UPDATE oauth_flows SET expires=0")
+            self.assertEqual(client.request(callback)[0], 303)
+            self.assertIn("expired", client.last_headers["Location"])
+            exchange.assert_not_called()
+
+    def test_anonymous_guests_are_private_reporters_not_staff_accounts(self):
+        guest, other = Client(self.base), Client(self.base)
+        self.assertEqual(guest.request("/api/anonymous", "POST", {"affiliation": "Admin"})[0], 400)
+        self.assertEqual(
+            guest.request(
+                "/api/anonymous",
+                "POST",
+                {"affiliation": "Visitor"},
+                extra_headers={"Origin": "https://untrusted.example"},
+            )[0],
+            403,
+        )
+        code, session = guest.request(
+            "/api/anonymous", "POST", {"affiliation": "Visitor", "role": "admin", "verified": 1}
+        )
+        self.assertEqual(code, 200, session)
+        guest.csrf = session["csrf"]
+        self.assertEqual(session["user"]["role"], "student")
+        self.assertEqual(session["user"]["is_guest"], 1)
+        self.assertEqual(session["user"]["email"], "")
+        uid = session["user"]["id"]
+        self.assertEqual(guest.request("/api/admin/users")[0], 403)
+        self.assertEqual(guest.request("/api/bootstrap")[0], 200)
+        self.assertNotIn(uid, [u["id"] for u in self.admin.request("/api/admin/users")[1]])
+        self.assertEqual(
+            self.admin.request(f"/api/admin/users/{uid}", "PATCH", {"role": "admin"})[0], 403
+        )
+        body = {
+            "title": "Anonymous campus concern",
+            "description": "A visible problem near the campus entrance.",
+            "category": "Safety",
+            "location": "Campus entrance",
+            "anonymous": False,
+        }
+        self.assertEqual(guest.request("/api/reports", "POST", body, csrf=False)[0], 403)
+        code, result = guest.request("/api/reports", "POST", body)
+        self.assertEqual(code, 201, result)
+        path = f"/api/reports/{result['id']}"
+        self.assertEqual(
+            guest.request(
+                path + "/comments", "POST", {"message": "More information about this concern."}
+            )[0],
+            201,
+        )
+        code, second = other.request("/api/anonymous", "POST", {"affiliation": "Staff"})
+        self.assertEqual(code, 200)
+        other.csrf = second["csrf"]
+        self.assertNotEqual(uid, second["user"]["id"])
+        self.assertEqual(other.request(path)[0], 404)
+        self.assertEqual(guest.request(f"/api/reports/{self.report()}")[0], 404)
+        for client in (guest, self.validator, self.admin):
+            code, report = client.request(path)
+            self.assertEqual(code, 200)
+            self.assertTrue(report["anonymous"])
+            self.assertEqual(
+                report["reporter"], {"name": "Anonymous reporter", "affiliation": "Visitor"}
+            )
+            self.assertTrue(all(e["actor"] == "Anonymous reporter" for e in report["events"]))
+        self.assertEqual(guest.request("/api/logout", "POST", {})[0], 200)
+        self.assertEqual(guest.request(path)[0], 401)
+
+    def test_signed_in_anonymous_reports_hide_identity_but_keep_tracking(self):
+        rid = self.report(anonymous=True)
+        path = f"/api/reports/{rid}"
+        self.student.request(
+            path + "/comments", "POST", {"message": "A follow-up without identifying details."}
+        )
+        for client in (self.student, self.validator, self.admin):
+            report = client.request(path)[1]
+            self.assertEqual(
+                report["reporter"], {"name": "Anonymous reporter", "affiliation": "Student"}
+            )
+            self.assertTrue(all(e["actor"] == "Anonymous reporter" for e in report["events"]))
+        self.assertTrue(self.student.request(path)[1]["is_mine"])
+        self.assertEqual(self.other.request(path)[0], 404)
+        audit = self.admin.request("/api/admin/audit")[1]
+        self.assertTrue(
+            all(
+                item["actor_id"] is None
+                for item in audit
+                if item["entity"] == str(rid) and item["action"].startswith("report.")
+            )
+        )
+        with server.connect() as c:
+            self.assertEqual(
+                c.execute("SELECT reporter_id FROM reports WHERE id=?", (rid,)).fetchone()[0],
+                self.student.request("/api/me")[1]["user"]["id"],
+            )
+        regular = self.admin.request(f"/api/reports/{self.report()}")[1]
+        self.assertEqual(regular["reporter"]["email"], "student@g.msuiit.edu.ph")
+        self.assertEqual(self.student.request("/api/reports", "POST", {"anonymous": "yes"})[0], 400)
+
+    def test_anonymous_limits_cannot_be_reset_with_a_new_cookie_or_spoofed_ip(self):
+        for _ in range(10):
+            code, result = Client(self.base).request(
+                "/api/anonymous", "POST", {"affiliation": "Faculty"}
+            )
+            self.assertEqual(code, 200, result)
+        code, result = Client(self.base).request(
+            "/api/anonymous",
+            "POST",
+            {"affiliation": "Student"},
+            extra_headers={"X-Vercel-Forwarded-For": "203.0.113.15"},
+        )
+        self.assertEqual(code, 429, result)
 
     def test_indoor_location_persists_for_the_reporter_and_assigned_staff_only(self):
         point = {"building_id": "old-cass", "floor_id": "second", "x": 0.25, "y": 0.8}
@@ -462,7 +768,10 @@ class SystemTests(unittest.TestCase):
         )
 
     def test_auth_rejects_other_origins_and_accepts_same_origin(self):
-        credentials = {"email": "student@test.local", "password": "test-password-for-iit-voice"}
+        credentials = {
+            "email": "student@g.msuiit.edu.ph",
+            "password": "test-password-for-iit-voice",
+        }
         client = Client(self.base)
         self.assertEqual(
             client.request(
@@ -480,7 +789,7 @@ class SystemTests(unittest.TestCase):
             client.request("/api/login", "POST", credentials, extra_headers={"Origin": self.base})[
                 0
             ],
-            200,
+            410,
         )
 
     def test_demo_sign_in_is_opt_in_local_and_uses_existing_permissions(self):
@@ -488,7 +797,7 @@ class SystemTests(unittest.TestCase):
         self.assertEqual(client.request("/api/demo/accounts")[1], {"accounts": []})
         self.assertEqual(client.request("/api/demo/login", "POST", {"account_id": 1})[0], 403)
         staff_id = server.create_account(
-            "demo-staff@test.local",
+            "demo-staff@g.msuiit.edu.ph",
             "Demo Staff",
             "student",
             "test-password-for-iit-voice",
@@ -497,12 +806,18 @@ class SystemTests(unittest.TestCase):
         )
         with server.connect() as c:
             student_id = c.execute(
-                "SELECT id FROM users WHERE email='student@test.local'"
+                "SELECT id FROM users WHERE email='student@g.msuiit.edu.ph'"
             ).fetchone()[0]
-            other_id = c.execute("SELECT id FROM users WHERE email='other@test.local'").fetchone()[
-                0
-            ]
+            other_id = c.execute(
+                "SELECT id FROM users WHERE email='other@g.msuiit.edu.ph'"
+            ).fetchone()[0]
             c.execute("UPDATE users SET is_demo=1 WHERE id=?", (student_id,))
+
+        def restore_student():
+            with server.connect() as c:
+                c.execute("UPDATE users SET is_demo=0 WHERE id=?", (student_id,))
+
+        self.addCleanup(restore_student)
         with patch("server.DEMO_LOGIN", True):
             accounts = client.request("/api/demo/accounts")[1]["accounts"]
             self.assertEqual({a["id"] for a in accounts}, {student_id, staff_id})
@@ -715,7 +1030,9 @@ class SystemTests(unittest.TestCase):
 
     def test_rate_limit_never_marks_an_unscreened_photo_as_safe(self):
         with server.connect() as c:
-            uid = c.execute("SELECT id FROM users WHERE email='student@test.local'").fetchone()[0]
+            uid = c.execute(
+                "SELECT id FROM users WHERE email='student@g.msuiit.edu.ph'"
+            ).fetchone()[0]
             c.execute(
                 "INSERT INTO login_limits VALUES(?,20,?)",
                 ("photo-ai:" + str(uid), server.time.time()),
@@ -1332,11 +1649,11 @@ class SystemTests(unittest.TestCase):
             self.admin.request(path, "PATCH", {"role": "office", "office_id": 4})[0], 200
         )
         self.assertEqual(self.other.request("/api/bootstrap")[0], 401)
-        changed = self.other.login("other@test.local")
+        changed = self.other.login("other@g.msuiit.edu.ph")
         self.assertEqual(changed["role"], "office")
         self.assertEqual(changed["office_id"], 4)
         self.assertEqual(self.admin.request(path, "PATCH", {"role": "student"})[0], 200)
-        self.assertIsNone(self.other.login("other@test.local")["office_id"])
+        self.assertIsNone(self.other.login("other@g.msuiit.edu.ph")["office_id"])
 
     def test_student_priority_is_set_by_admin(self):
         rid = self.report(priority="urgent")
@@ -1427,7 +1744,7 @@ class SystemTests(unittest.TestCase):
 
     def test_access_revocation_and_audit(self):
         client = Client(self.base)
-        user = client.login("other@test.local")
+        user = client.login("other@g.msuiit.edu.ph")
         code, _ = self.admin.request("/api/admin/users/" + str(user["id"]), "PATCH", {"active": 0})
         self.assertEqual(code, 200)
         self.assertEqual(client.request("/api/bootstrap")[0], 401)
@@ -1488,7 +1805,7 @@ class OnlineDemoIsolationTests(unittest.TestCase):
                     server.DATA, server.DB = Path(directory), database
                     server.initialize()
                     uid = server.create_account(
-                        "demo@test.local" if demo else "regular@test.local",
+                        "demo@g.msuiit.edu.ph" if demo else "regular@g.msuiit.edu.ph",
                         "Demo Admin" if demo else "Regular Admin",
                         "admin",
                         "test-password-for-iit-voice",
@@ -1527,7 +1844,7 @@ class OnlineDemoIsolationTests(unittest.TestCase):
                     try:
                         base = "http://127.0.0.1:" + str(http.server_port)
                         regular, demo = Client(base), Client(base)
-                        regular.login("regular@test.local")
+                        regular.login("regular@g.msuiit.edu.ph")
                         self.assertEqual(
                             regular.request("/api/bootstrap")[1]["reports"][0]["title"],
                             "Regular private concern",
@@ -1579,7 +1896,9 @@ class OnlineDemoIsolationTests(unittest.TestCase):
                         with patch.object(server, "DEMO_DATABASE_URL", ""):
                             self.assertEqual(demo.request("/api/me")[0], 401)
                         # Normal sign-in always targets regular accounts, even with a demo cookie.
-                        self.assertEqual(demo.login("regular@test.local")["name"], "Regular Admin")
+                        self.assertEqual(
+                            demo.login("regular@g.msuiit.edu.ph")["name"], "Regular Admin"
+                        )
                         self.assertEqual(
                             demo.request("/api/bootstrap")[1]["reports"][0]["title"],
                             "Regular private concern",

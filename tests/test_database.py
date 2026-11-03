@@ -125,6 +125,10 @@ class DatabaseTests(unittest.TestCase):
                 ("/api?route=reports/17/attachments", "/api/reports/17/attachments"),
                 ("/api/index?route=me", "/api/me"),
                 ("/api/login", "/api/login"),
+                (
+                    "/api?route=auth/google/callback&code=one-use-code&flow=browser-flow&next=https://evil.example",
+                    "/api/auth/google/callback?code=one-use-code&flow=browser-flow",
+                ),
             ):
                 request.path = incoming
                 request.dispatch("POST")

@@ -41,14 +41,16 @@ function buildingHoverImage(building, id) {
     </g>`;
   return svg;
 }
-export const pinIcon = ({ color = '#7a203c', symbol = '' } = {}) =>
-  L.divIcon({
-    className: 'report-marker',
+export function pinIcon({ color = '#7a203c', symbol = '', editable = false } = {}) {
+  const touchTarget = window.matchMedia('(pointer: coarse)').matches;
+  return L.divIcon({
+    className: `report-marker${editable ? ' report-marker-editable' : ''}${touchTarget ? ' touch-pin' : ''}`,
     html: `<svg class="map-pin" viewBox="0 0 32 44" aria-hidden="true"><path fill="${color}" stroke="white" stroke-width="2.5" d="M16 1.5C8 1.5 1.5 8 1.5 16c0 10 14.5 25.5 14.5 25.5S30.5 26 30.5 16C30.5 8 24 1.5 16 1.5Z"/>${symbol ? `<text x="16" y="20" text-anchor="middle" fill="white" font-size="13" font-weight="700" font-family="sans-serif">${symbol}</text>` : '<circle cx="16" cy="16" r="5" fill="white"/>'}</svg>`,
-    iconSize: [32, 44],
-    iconAnchor: [16, 42],
+    iconSize: touchTarget ? [48, 56] : [32, 44],
+    iconAnchor: touchTarget ? [24, 50] : [16, 42],
     popupAnchor: [0, -38],
   });
+}
 
 export function ReportMap({
   reports = emptyReports,
@@ -185,23 +187,25 @@ export function ReportMap({
         setLocationError('');
         callbacks.current.onPick?.(point);
       });
-    let fitted = false;
+    let fitted = false,
+      previousSize = null;
     const observer = new ResizeObserver(() => {
       // A hidden wizard step has no size; preserve the map view until it is visible again.
       if (!container.current?.clientWidth || !container.current?.clientHeight) return;
+      const width = container.current.clientWidth,
+        height = container.current.clientHeight;
+      const resized =
+        previousSize && (width !== previousSize.width || height !== previousSize.height);
       map.invalidateSize();
       if (
-        (!fitted || callbacks.current.fitCampusOnResize) &&
-        container.current?.clientWidth &&
-        container.current?.clientHeight
+        !fitted ||
+        callbacks.current.fitCampusOnResize ||
+        (resized && window.matchMedia('(max-width: 760px)').matches)
       ) {
         map.fitBounds(campusBounds, { padding: [16, 16], animate: false });
-        // A whole landscape plan becomes unreadably small on a phone.
-        // Start closer to campus; Fit campus remains available for orientation.
-        if (!callbacks.current.fitCampusOnResize && container.current.clientWidth < 600)
-          map.setZoom(Math.max(map.getZoom(), -0.5), { animate: false });
         fitted = true;
       }
+      previousSize = { width, height };
     });
     observer.observe(container.current);
     return () => {
@@ -242,7 +246,10 @@ export function ReportMap({
       L.svgOverlay(image, campusBounds, { className: 'building-hover-overlay' }).addTo(outlines);
       let hovering = false;
       const updateHover = () => {
-        const active = hovering || element.matches(':focus');
+        const active =
+          ((hovering || element.matches(':focus')) &&
+            window.matchMedia('(hover: hover)').matches) ||
+          element.matches(':focus-visible');
         element.classList.toggle('is-hovered', active);
         image.classList.toggle('is-hovered', active);
       };
@@ -379,7 +386,7 @@ export function ReportMap({
       pickedMarker.current.setLatLng(point);
     } else
       pickedMarker.current = L.marker(point, {
-        icon: pinIcon(),
+        icon: pinIcon({ editable: true }),
         draggable: true,
         autoPan: true,
         title: 'Drag to adjust report location',

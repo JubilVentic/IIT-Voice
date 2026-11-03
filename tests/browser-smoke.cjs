@@ -15,6 +15,8 @@ const env = {
   PYTHONUNBUFFERED: '1',
   GEMINI_API_KEY: 'browser-test-key',
   IIT_VOICE_DEMO_LOGIN: '1',
+  SUPABASE_URL: 'https://project-ref.supabase.co',
+  SUPABASE_PUBLISHABLE_KEY: 'publishable-test-key',
 };
 const python = process.env.IIT_VOICE_PYTHON || 'python3';
 async function freePort() {
@@ -35,8 +37,8 @@ async function freePort() {
       encoding: 'utf8',
     });
     assert.equal(seed.status, 0, seed.stderr);
-    const password = seed.stdout.match(/accounts: (.+)/)[1].trim();
     const port = await freePort();
+    const base = `http://127.0.0.1:${port}`;
     service = spawn(
       python,
       [
@@ -69,13 +71,13 @@ def compare(image, before_images, concern):
         return {'status':'unclear','reason':'Fixture: the repair is obscured.'}
     return {'status':'supports_completion','reason':'Fixture: the relevant chair repair is visibly supported.'}
 server.assess_completion = compare
+server.google_auth.exchange_identity = lambda code, verifier: {'email':'google-browser@g.msuiit.edu.ph','sub':'google-browser-subject','name':'Google Browser Reporter'}
 server.main()`,
         '--port',
         String(port),
       ],
-      { cwd: root, env, stdio: 'ignore' }
+      { cwd: root, env: { ...env, IIT_VOICE_PUBLIC_URL: base }, stdio: 'ignore' }
     );
-    const base = `http://127.0.0.1:${port}`;
     for (let i = 0; i < 40; i++) {
       try {
         await fetch(base);
@@ -101,9 +103,19 @@ server.main()`,
     fs.mkdirSync(path.join(root, 'test-results'), { recursive: true });
     async function login(email) {
       await page.goto(base);
-      await page.locator('[name=email]').fill(email);
-      await page.locator('[name=password]').fill(password);
-      await page.getByRole('button', { name: 'Sign in →', exact: true }).click();
+      const accounts = await (await page.request.get(base + '/api/demo/accounts')).json();
+      const account = accounts.accounts.find(
+        (item) =>
+          item.name ===
+          {
+            admin: 'Morgan Lee',
+            validator: 'Sam Cruz',
+            student: 'Alex Reyes',
+            plant: 'Physical Plant Demo',
+            ict: 'ICT Demo',
+          }[email.split('@')[0]]
+      );
+      await page.locator(`[data-demo-account="${account.id}"]`).click();
       await page.locator('.stats').waitFor();
     }
     async function reportStep(index, target = page) {
@@ -160,7 +172,7 @@ server.main()`,
     }
     async function logout() {
       await page.locator('.sidebar [data-logout]').click();
-      await page.locator('#auth-form').waitFor();
+      await page.getByRole('button', { name: 'Continue with Google', exact: true }).waitFor();
     }
     async function checkNotifications(target) {
       const expected = await target.evaluate(async () => {
@@ -195,19 +207,23 @@ server.main()`,
     }
     await page.goto(base);
     await page.locator('.demo-accounts').waitFor();
-    await page.route('**/api/login', (route) =>
+    assert.equal(await page.locator('[name=email], [name=password], .auth-tabs').count(), 0);
+    assert.equal(
+      await page.getByRole('button', { name: 'Request an account', exact: true }).count(),
+      0
+    );
+    await page.route('**/api/auth/google/start', (route) =>
       route.fulfill({ status: 404, contentType: 'text/plain', body: 'The page could not be found' })
     );
-    await page.locator('[name=email]').fill('offline@test.local');
-    await page.locator('[name=password]').fill('disposable-browser-test-password');
-    await page.getByRole('button', { name: 'Sign in →', exact: true }).click();
+    await page.waitForFunction(() => !document.querySelector('.google-sign-in').disabled);
+    await page.getByRole('button', { name: 'Continue with Google', exact: true }).click();
     await page
       .getByRole('alert')
       .filter({ hasText: 'The server is unavailable. Please try again shortly.' })
       .waitFor();
-    await page.unroute('**/api/login');
-    await page.locator('[name=email]').fill('');
-    await page.locator('[name=password]').fill('');
+    await page.unroute('**/api/auth/google/start');
+    await page.reload();
+    await page.locator('.demo-accounts').waitFor();
 
     assert.equal(await page.locator('[data-demo-account]').count(), 6);
     await page.locator('.auth-campus-photo').evaluate((image) => image.decode());
@@ -1068,6 +1084,7 @@ server.main()`,
     await page
       .locator('#report-form [name=description]')
       .fill('A chair is broken near the reading area. Please inspect and repair it.');
+    await page.getByRole('checkbox', { name: 'Submit anonymously', exact: true }).check();
     await page.screenshot({ path: path.join(root, 'test-results/report-details-step.png') });
     await page.getByRole('button', { name: 'Submit for validation', exact: true }).click();
     await page
@@ -1075,6 +1092,7 @@ server.main()`,
       .filter({ hasText: 'Browser test: broken library chair' })
       .waitFor();
     await page.getByText('2nd floor, Room 204, beside the stairs', { exact: false }).waitFor();
+    await page.locator('.details-card').getByText('Anonymous reporter', { exact: false }).waitFor();
     await page.locator('.evidence-card').getByText('photo.jpg', { exact: true }).waitFor();
     assert.equal(
       await page.locator('#modal .report-description').first().innerText(),
@@ -1552,10 +1570,10 @@ server.main()`,
         fullPage: true,
       });
     }
-    await mobile.getByRole('button', { name: 'Request an account', exact: true }).tap();
+    await mobile.getByRole('button', { name: 'Continue anonymously', exact: true }).tap();
     await mobile.locator('[name=affiliation]').waitFor();
-    await fits('Mobile registration');
-    await mobile.getByRole('button', { name: 'Sign in', exact: true }).tap();
+    await fits('Mobile anonymous access');
+    await mobile.getByRole('button', { name: 'Back to access options', exact: true }).tap();
     for (const role of ['Student', 'Main Admin', 'Validator Admin', 'Physical Plant']) {
       await mobile.setViewportSize({ width: 390, height: 844 });
       await mobile
@@ -1592,18 +1610,31 @@ server.main()`,
         if (width === 390) {
           const map = mobile.locator('#campus-map');
           const image = map.locator('.leaflet-image-layer');
-          const focusedWidth = await image.evaluate((el) => el.getBoundingClientRect().width);
+          const fittedWidth = await image.evaluate((el) => el.getBoundingClientRect().width);
+          const frame = await map.boundingBox(),
+            drawing = await image.boundingBox();
           assert.ok(
-            focusedWidth > (await map.boundingBox()).width,
-            'Phone maps should start close enough to read and pan'
+            drawing.x >= frame.x - 1 &&
+              drawing.x + drawing.width <= frame.x + frame.width + 1 &&
+              drawing.y >= frame.y - 1 &&
+              drawing.y + drawing.height <= frame.y + frame.height + 1,
+            'Phone maps initially show the complete campus'
+          );
+          await map.locator('.leaflet-control-zoom-in').tap();
+          await mobile.waitForTimeout(350);
+          assert.ok(
+            (await image.evaluate((el) => el.getBoundingClientRect().width)) > fittedWidth,
+            'Phone users can zoom in for detail'
           );
           await mobile
             .getByRole('button', { name: 'Show the whole campus plan', exact: true })
             .tap();
           await mobile.waitForTimeout(350);
           assert.ok(
-            (await image.evaluate((el) => el.getBoundingClientRect().width)) < focusedWidth,
-            'Fit campus must zoom out to show the whole plan'
+            Math.abs(
+              (await image.evaluate((el) => el.getBoundingClientRect().width)) - fittedWidth
+            ) < 2,
+            'Fit campus restores the complete plan'
           );
           await map.locator('.leaflet-control-zoom-in').tap();
           await mobile.waitForTimeout(350);
@@ -1642,6 +1673,147 @@ server.main()`,
           false,
           'Escape closes the mobile menu'
         );
+        // Chrome full-page screenshots can change the emulated primary pointer to mouse.
+        // Restore real touch input before exercising the phone's gesture workflow.
+        const touch = await mobile.context().newCDPSession(mobile);
+        await touch.send('Emulation.setTouchEmulationEnabled', {
+          enabled: true,
+          maxTouchPoints: 5,
+        });
+        await mobile.locator('[data-new]').tap();
+        assert.equal(await mobile.evaluate(() => matchMedia('(pointer: coarse)').matches), true);
+        for (const width of [320, 390]) {
+          await mobile.setViewportSize({ width, height: 844 });
+          await mobile.waitForTimeout(400);
+          const map = await mobile.locator('#pick-map').boundingBox();
+          const drawing = await mobile.locator('#pick-map img.leaflet-image-layer').boundingBox();
+          assert.ok(
+            drawing.x >= map.x - 1 &&
+              drawing.x + drawing.width <= map.x + map.width + 1 &&
+              drawing.y >= map.y - 1 &&
+              drawing.y + drawing.height <= map.y + map.height + 1,
+            `The full report map fits at ${width}px`
+          );
+          assert.ok(map.height <= 320, 'The initial phone map does not need a tall portrait frame');
+        }
+        await mobile
+          .locator('.location-map-stage')
+          .screenshot({ path: path.join(root, 'test-results/mobile-campus-fitted.png') });
+        await mobile.locator('#pick-map').scrollIntoViewIfNeeded();
+        const campusImage = await mobile.locator('#pick-map img.leaflet-image-layer').boundingBox();
+        await mobile.touchscreen.tap(
+          campusImage.x + campusImage.width * 0.27,
+          campusImage.y + campusImage.height * 0.235
+        );
+        await mobile.getByRole('button', { name: 'Second floor', exact: true }).tap();
+        await mobile.waitForTimeout(400);
+        await mobile.locator('.floor-plan-map').scrollIntoViewIfNeeded();
+        const floorImage = await mobile
+          .locator('.floor-plan-map img.leaflet-image-layer')
+          .boundingBox();
+        const pixel = (x, y) => ({
+          x: floorImage.x + (floorImage.width * x) / 1448,
+          y: floorImage.y + (floorImage.height * y) / 1086,
+        });
+        const room215 = pixel(460, 305);
+        await mobile.touchscreen.tap(room215.x, room215.y);
+        await mobile.getByRole('heading', { name: 'Where is the concern?', exact: true }).waitFor();
+        assert.equal(
+          await mobile.locator('#report-form [name=location]').inputValue(),
+          'Old CASS Building · Second floor · Room 215'
+        );
+        const touchMarker = await mobile
+          .locator('.floor-plan-map .leaflet-marker-icon')
+          .boundingBox();
+        assert.ok(
+          touchMarker.width >= 44 && touchMarker.height >= 44,
+          'The pin has a finger-sized hit area'
+        );
+        async function touchGesture(starts, ends) {
+          const points = (values) => values.map((p, id) => ({ ...p, id, radiusX: 4, radiusY: 4 }));
+          await touch.send('Input.dispatchTouchEvent', {
+            type: 'touchStart',
+            touchPoints: points(starts),
+          });
+          for (let i = 1; i <= 12; i++) {
+            await touch.send('Input.dispatchTouchEvent', {
+              type: 'touchMove',
+              touchPoints: points(
+                starts.map((start, j) => ({
+                  x: start.x + ((ends[j].x - start.x) * i) / 12,
+                  y: start.y + ((ends[j].y - start.y) * i) / 12,
+                }))
+              ),
+            });
+            await mobile.waitForTimeout(16);
+          }
+          await touch.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+          await mobile.waitForTimeout(350);
+        }
+        const department = pixel(525, 710);
+        await touchGesture(
+          [{ x: touchMarker.x + 24, y: touchMarker.y + 28 }],
+          [{ x: department.x, y: department.y - 22 }]
+        );
+        assert.equal(
+          await mobile.locator('#report-form [name=location]').inputValue(),
+          'Old CASS Building · Second floor · Sociology Department',
+          'Touch dragging updates the room under the pin'
+        );
+        const adjusted = await mobile.locator('.floor-plan-map .leaflet-marker-icon').boundingBox();
+        assert.ok(
+          Math.hypot(adjusted.x + 24 - department.x, adjusted.y + 50 - department.y) < 5,
+          'The pin tip stays at the finger-selected position'
+        );
+        const floorMap = await mobile.locator('.floor-plan-map').boundingBox();
+        await touchGesture(
+          [{ x: floorMap.x + floorMap.width / 2, y: floorMap.y + 40 }],
+          [{ x: floorMap.x + floorMap.width / 2 + 25, y: floorMap.y + 60 }]
+        );
+        assert.equal(
+          await mobile.locator('#report-form [name=location]').inputValue(),
+          'Old CASS Building · Second floor · Sociology Department',
+          'Panning does not drop or move a pin'
+        );
+        const beforePinch = await mobile
+          .locator('.floor-plan-map img.leaflet-image-layer')
+          .evaluate((image) => image.getBoundingClientRect().width);
+        const center = { x: floorMap.x + floorMap.width / 2, y: floorMap.y + floorMap.height / 2 };
+        await touchGesture(
+          [
+            { x: center.x - 35, y: center.y },
+            { x: center.x + 35, y: center.y },
+          ],
+          [
+            { x: center.x - 55, y: center.y },
+            { x: center.x + 55, y: center.y },
+          ]
+        );
+        assert.ok(
+          (await mobile
+            .locator('.floor-plan-map img.leaflet-image-layer')
+            .evaluate((image) => image.getBoundingClientRect().width)) > beforePinch,
+          'Two fingers zoom the floor plan'
+        );
+        assert.equal(
+          await mobile.locator('#report-form [name=location]').inputValue(),
+          'Old CASS Building · Second floor · Sociology Department',
+          'Pinch zoom does not drop a new pin'
+        );
+        await touch.detach();
+        await mobile
+          .locator('.floor-plan-map')
+          .screenshot({ path: path.join(root, 'test-results/mobile-pin-touch-adjusted.png') });
+        await mobile.getByRole('button', { name: 'Continue to evidence', exact: true }).tap();
+        await mobile.getByRole('heading', { name: 'Add evidence', exact: true }).waitFor();
+        await reportStep(0, mobile);
+        await mobile.locator('.floor-plan-map .leaflet-marker-icon').waitFor();
+        assert.equal(
+          await mobile.locator('#report-form [name=location]').inputValue(),
+          'Old CASS Building · Second floor · Sociology Department',
+          'The confirmed pin survives Back'
+        );
+        await mobile.locator('.dialog-close').tap();
         await mobile.locator('[data-new]').tap();
         await reportStep(2, mobile);
         await mobile.locator('#report-form [name=title]').fill('Mobile report draft');
@@ -1750,9 +1922,79 @@ server.main()`,
         'The menu badge must also clear'
       );
       await mobile.locator('.topbar [data-logout]').tap();
-      await mobile.locator('#auth-form').waitFor();
+      await mobile.getByRole('button', { name: 'Continue with Google', exact: true }).waitFor();
     }
     await mobile.close();
+    // A guest uses the same reporting wizard without an email, password, or staff access.
+    const guest = await browser.newPage({ viewport: { width: 390, height: 844 } });
+    await guest.goto(base);
+    await guest.getByRole('button', { name: 'Continue anonymously', exact: true }).click();
+    await guest.getByLabel(/^Reporter role/).selectOption('Visitor');
+    assert.equal(await guest.locator('#auth-form [name=password]').count(), 0);
+    await guest.screenshot({
+      path: path.join(root, 'test-results/anonymous-access.png'),
+      fullPage: true,
+    });
+    await guest.getByRole('button', { name: 'Start anonymous report →', exact: true }).click();
+    await guest.getByRole('heading', { name: 'Where is the concern?', exact: true }).waitFor();
+    await reportStep(2, guest);
+    await guest.locator('#report-form [name=title]').fill('Guest fixture: uneven entrance');
+    await guest.locator('#report-form [name=location]').fill('Campus entrance');
+    await guest
+      .locator('#report-form [name=description]')
+      .fill('The walkway surface is uneven near the entrance.');
+    await guest.getByRole('button', { name: 'Submit for validation', exact: true }).click();
+    await guest
+      .locator('.details-card')
+      .getByText('Anonymous reporter · Visitor', { exact: false })
+      .waitFor();
+    assert.equal(await guest.locator('[data-page=users]').count(), 0);
+    await guest.reload();
+    await guest.getByRole('button', { name: 'Report a concern', exact: false }).waitFor();
+    const guestData = await guest.evaluate(async () => (await fetch('/api/bootstrap')).json());
+    assert.equal(guestData.reports.filter((report) => report.is_mine).length, 1);
+    await guest.close();
+    const google = await browser.newPage({ viewport: { width: 1360, height: 1000 } });
+    await google.route('**/api/auth/options', (route) =>
+      route.fulfill({ json: { google: false } })
+    );
+    await google.goto(base);
+    await google.getByText('Google sign-in needs one-time setup.', { exact: false }).waitFor();
+    assert.equal(
+      await google.getByRole('button', { name: 'Continue with Google', exact: true }).isEnabled(),
+      false
+    );
+    await google.unroute('**/api/auth/options');
+    // Fake only the external provider page. The application's PKCE, cookies,
+    // callback, pending profile and registration endpoints run normally.
+    await google.route('https://project-ref.supabase.co/auth/v1/authorize?**', async (route) => {
+      const callback = new URL(route.request().url()).searchParams.get('redirect_to');
+      await route.fulfill({
+        status: 302,
+        headers: { location: callback + '&code=browser-code' },
+        body: '',
+      });
+    });
+    await google.goto(base);
+    await google.waitForFunction(() => !document.querySelector('.google-sign-in').disabled);
+    await google.screenshot({
+      path: path.join(root, 'test-results/google-sign-in.png'),
+      fullPage: true,
+    });
+    await google.getByRole('button', { name: 'Continue with Google', exact: true }).click();
+    await google.getByRole('heading', { name: 'Complete your profile', exact: true }).waitFor();
+    assert.equal(await google.locator('#auth-form [name=password]').count(), 0);
+    assert.equal(
+      await google.locator('#auth-form [name=name]').inputValue(),
+      'Google Browser Reporter'
+    );
+    await google.locator('#auth-form [name=affiliation]').selectOption('Faculty');
+    await google.screenshot({ path: path.join(root, 'test-results/google-affiliation.png') });
+    await google.getByRole('button', { name: 'Continue to IIT Voice →', exact: true }).click();
+    await google.getByRole('heading', { name: 'Hello, Google.', exact: true }).waitFor();
+    assert.equal(await google.locator('.account small').innerText(), 'Campus member');
+    await google.screenshot({ path: path.join(root, 'test-results/google-reporter-access.png') });
+    await google.close();
     assert.deepEqual(
       externalMaps,
       [],

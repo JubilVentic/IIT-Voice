@@ -23,6 +23,7 @@ import { PhotoAssist, CompletionCheck } from '../components/PhotoAssist.jsx';
 export function NewReport() {
   const { user, data, api, refresh, toast, openReport, closeModal } = useVoice();
   const [step, setStep] = useState(0);
+  const [anonymous, setAnonymous] = useState(Boolean(user.is_guest));
   const heading = useRef(null);
   const [pin, setPin] = useState(null),
     [indoor, setIndoor] = useState(null),
@@ -45,6 +46,11 @@ export function NewReport() {
     heading.current?.closest('dialog')?.scrollTo({ top: 0 });
     heading.current?.focus({ preventScroll: true });
   }, [step]);
+  function completeLocation() {
+    // A finger covers the pin. Let touch users inspect and refine it before continuing.
+    if (!window.matchMedia('(pointer: coarse)').matches)
+      setStep((current) => (current === 0 ? 1 : current));
+  }
   function clearPin() {
     setPin(null);
     setIndoor(null);
@@ -99,6 +105,7 @@ export function NewReport() {
       body.latitude = pin?.latitude ?? null;
       body.longitude = pin?.longitude ?? null;
       body.indoor_location = indoor;
+      body.anonymous = anonymous;
       const created = await api('/api/reports', { method: 'POST', body });
       let warning = '';
       if (file?.size) {
@@ -150,7 +157,7 @@ export function NewReport() {
             onPick={(point) => {
               if (step === 0) pickLocation(point);
             }}
-            onComplete={() => setStep((current) => (current === 0 ? 1 : current))}
+            onComplete={completeLocation}
           />
           <p id="pin-label" className="map-caption">
             {pin
@@ -165,7 +172,7 @@ export function NewReport() {
             <ReportList reports={campusReports(data.reports).slice(0, 6)} />
           </details>
 
-          <div className="actions report-step-actions">
+          <div className="actions report-step-actions location-step-actions">
             <button
               type="button"
               className="btn solid"
@@ -341,6 +348,34 @@ export function NewReport() {
             </button>
           )}
 
+          <section className="report-privacy" aria-label="Reporter privacy">
+            {user.is_guest ? (
+              <p>
+                <strong>Anonymous report</strong> · {user.affiliation} (self-declared). Reviewers
+                will not receive your name or email.
+              </p>
+            ) : (
+              <>
+                <label className="check">
+                  <input
+                    type="checkbox"
+                    checked={anonymous}
+                    onChange={(e) => setAnonymous(e.target.checked)}
+                  />
+                  Submit anonymously
+                </label>
+                <p className="meta">
+                  Hides your name and email from reviewers and report activity. Your selected
+                  affiliation remains visible. The report stays linked to your account in the
+                  protected database so you can follow its progress.
+                </p>
+              </>
+            )}
+            <p className="meta">
+              Avoid including identifying details in the description or photos if you want to remain
+              anonymous.
+            </p>
+          </section>
           <div className="notice">
             Immediate danger? Use the campus emergency channel directly. An urgent label does not
             replace emergency response.

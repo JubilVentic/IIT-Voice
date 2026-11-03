@@ -1,6 +1,6 @@
 """Vercel entrypoint; business rules remain in the shared Python handler."""
 
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, urlsplit, urlencode
 
 import server
 
@@ -20,4 +20,11 @@ class handler(server.Handler):
         if path.path in ("/api", "/api/", "/api/index", "/api/index.py"):
             route = parse_qs(path.query).get("route", [""])[0]
             self.path = "/api/" + route.lstrip("/")
+            if route.lstrip("/") == "auth/google/callback":
+                callback = {
+                    key: value
+                    for key, value in parse_qs(path.query).items()
+                    if key in ("code", "flow", "error")
+                }
+                self.path += "?" + urlencode(callback, doseq=True)
         super().dispatch(method)

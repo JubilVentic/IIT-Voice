@@ -17,10 +17,11 @@ from datetime import datetime, timezone
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit, urlencode
 from dotenv import load_dotenv
 from database import DEMO_SCHEMA, connect_postgres, insert_id
 from indoor_location import indoor_label, normalize_indoor_location
+import google_auth
 from photo_analysis import prepare_photo, suggest_category, assess_completion
 from report_categories import (
     CATEGORIES,
@@ -38,6 +39,7 @@ DB = DATA / "iit-voice.sqlite3"
 DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
 DEMO_DATABASE_URL = os.environ.get("DEMO_DATABASE_URL", "").strip()
 ROLES = ("student", "validator", "admin", "office")
+REPORTER_AFFILIATIONS = ("Student", "Faculty", "Staff", "Visitor")
 STATUSES = (
     "submitted",
     "needs_information",
@@ -94,10 +96,6 @@ def password_hash(password, salt=None):
     return salt + ":" + digest
 
 
-def password_matches(password, stored):
-    return hmac.compare_digest(password_hash(password, stored.split(":")[0]), stored)
-
-
 def initialize():
     if DATABASE_URL:
         with connect() as c:
@@ -109,6 +107,16 @@ def initialize():
             c.connection.autocommit = False
             c.execute(
                 "ALTER TABLE reports ADD COLUMN IF NOT EXISTS indoor_location TEXT NOT NULL DEFAULT '{}'"
+            )
+            c.execute(
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS is_guest INTEGER NOT NULL DEFAULT 0"
+            )
+            c.execute(
+                "ALTER TABLE reports ADD COLUMN IF NOT EXISTS anonymous INTEGER NOT NULL DEFAULT 0"
+            )
+            c.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS google_subject TEXT")
+            c.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS users_google_subject ON users(google_subject)"
             )
             initialize_defaults(c)
         return
@@ -183,6 +191,9 @@ def initialize():
           action TEXT NOT NULL, entity TEXT NOT NULL, detail TEXT NOT NULL, created_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS login_limits (
           key TEXT PRIMARY KEY, attempts INTEGER NOT NULL, start REAL NOT NULL);
+        CREATE TABLE IF NOT EXISTS oauth_flows (
+          token_hash TEXT PRIMARY KEY, verifier TEXT NOT NULL,
+          profile TEXT NOT NULL DEFAULT '{}', expires REAL NOT NULL);
         CREATE INDEX IF NOT EXISTS reports_visibility ON reports(visibility,status);
         CREATE INDEX IF NOT EXISTS reports_reporter ON reports(reporter_id);
         """)
@@ -198,6 +209,13 @@ def initialize():
                 c.execute("UPDATE users SET is_demo=1 WHERE email=? AND name=?", (email, name))
         if "office_id" not in [r["name"] for r in c.execute("PRAGMA table_info(users)")]:
             c.execute("ALTER TABLE users ADD COLUMN office_id INTEGER REFERENCES offices(id)")
+        if "is_guest" not in [r["name"] for r in c.execute("PRAGMA table_info(users)")]:
+            c.execute("ALTER TABLE users ADD COLUMN is_guest INTEGER NOT NULL DEFAULT 0")
+        if "google_subject" not in [r["name"] for r in c.execute("PRAGMA table_info(users)")]:
+            c.execute("ALTER TABLE users ADD COLUMN google_subject TEXT")
+        c.execute("CREATE UNIQUE INDEX IF NOT EXISTS users_google_subject ON users(google_subject)")
+        if "anonymous" not in [r["name"] for r in c.execute("PRAGMA table_info(reports)")]:
+            c.execute("ALTER TABLE reports ADD COLUMN anonymous INTEGER NOT NULL DEFAULT 0")
         if "public_title" not in [r["name"] for r in c.execute("PRAGMA table_info(reports)")]:
             c.execute("ALTER TABLE reports ADD COLUMN public_title TEXT NOT NULL DEFAULT ''")
         if "location_details" not in [r["name"] for r in c.execute("PRAGMA table_info(reports)")]:
@@ -242,6 +260,12 @@ def initialize_defaults(c):
 
 
 def audit(c, actor, action, entity, detail=""):
+    if action.startswith("report."):
+        report = c.execute(
+            "SELECT reporter_id,anonymous FROM reports WHERE id=?", (int(entity),)
+        ).fetchone()
+        if report and report["anonymous"] and report["reporter_id"] == actor:
+            actor = None
     c.execute(
         "INSERT INTO audit(actor_id,action,entity,detail,created_at) VALUES(?,?,?,?,?)",
         (actor, action, entity, detail, now()),
@@ -263,7 +287,7 @@ def notify(c, user, report, message):
 
 
 def user_json(u):
-    return {
+    result = {
         k: u[k]
         for k in (
             "id",
@@ -275,8 +299,12 @@ def user_json(u):
             "active",
             "created_at",
             "office_id",
+            "is_guest",
         )
     }
+    if u["is_guest"]:
+        result["email"] = ""
+    return result
 
 
 class APIError(Exception):
@@ -298,6 +326,14 @@ def field(body, name, minimum=1, maximum=200):
         "%s must have %s–%s characters." % (name, minimum, maximum),
     )
     return value
+
+
+def university_email(email):
+    check(
+        re.fullmatch(r"[^\s@]+@g\.msuiit\.edu\.ph", email, re.I),
+        "Use your @g.msuiit.edu.ph university email, or continue anonymously.",
+    )
+    return email.lower()
 
 
 def report_categories(body, primary):
@@ -593,6 +629,12 @@ def report_json(c, u, r, detail=False):
                 "SELECT id,name,email,affiliation FROM users WHERE id=?", (r["reporter_id"],)
             ).fetchone()
         )
+        result["anonymous"] = bool(r["anonymous"])
+        if r["anonymous"]:
+            result["reporter"] = {
+                "name": "Anonymous reporter",
+                "affiliation": result["reporter"]["affiliation"],
+            }
         result["assigned_to"] = r["assigned_to"]
         assigned = c.execute(
             "SELECT id,name,role FROM users WHERE id=?", (r["assigned_to"],)
@@ -623,7 +665,13 @@ def report_json(c, u, r, detail=False):
                     "message": e["message"]
                     if privileged
                     else "Status updated: " + e["message"].split(" — ")[0],
-                    "actor": e["name"] if privileged else "IIT Voice team",
+                    "actor": (
+                        "Anonymous reporter"
+                        if r["anonymous"] and e["actor_id"] == r["reporter_id"]
+                        else e["name"]
+                    )
+                    if privileged
+                    else "IIT Voice team",
                     "internal": e["internal"],
                     "created_at": e["created_at"],
                 }
@@ -656,7 +704,8 @@ class Handler(BaseHTTPRequestHandler):
             "default-src 'self'; script-src 'self' https://unpkg.com; style-src 'self' 'unsafe-inline' https://unpkg.com; img-src 'self' data: blob: https://tile.openstreetmap.org; frame-src https://www.google.com/maps/embed; connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'",
         )
         for k, v in (extra or {}).items():
-            self.send_header(k, v)
+            for item in v if isinstance(v, list) else [v]:
+                self.send_header(k, item)
         self.end_headers()
         self.wfile.write(payload)
 
@@ -707,7 +756,9 @@ class Handler(BaseHTTPRequestHandler):
         return bool(DATABASE_URL and DEMO_DATABASE_URL)
 
     def uses_online_demo(self, path):
-        if path in ("/api/login", "/api/register"):
+        if path.startswith("/api/auth/"):
+            return False
+        if path in ("/api/login", "/api/register", "/api/anonymous"):
             return False
         if path in ("/api/demo/accounts", "/api/demo/login"):
             return self.online_demo_enabled()
@@ -737,6 +788,9 @@ class Handler(BaseHTTPRequestHandler):
         self._online_demo = False
         try:
             path = urlsplit(self.path).path
+            if path == "/api/auth/options" and method == "GET":
+                self.send(200, {"google": google_auth.configured()})
+                return
             if path == "/api/health" and method == "GET":
                 # Process readiness must not depend on a cloud database round trip.
                 self.send(200, {"ok": True})
@@ -781,7 +835,7 @@ class Handler(BaseHTTPRequestHandler):
             and hostname in ("127.0.0.1", "localhost", "::1")
         )
 
-    def sign_in(self, c, u):
+    def sign_in(self, c, u, redirect=False):
         check(
             u["role"] != "office" or u["office_id"] is not None,
             "Your office membership needs to be configured by Main Admin.",
@@ -798,11 +852,215 @@ class Handler(BaseHTTPRequestHandler):
             "INSERT INTO sessions VALUES(?,?,?,?)",
             (hashlib.sha256(token.encode()).hexdigest(), u["id"], csrf, time.time() + 43200),
         )
-        self.send(
-            200, {"user": user_json(u), "csrf": csrf}, extra={"Set-Cookie": self.cookie(token)}
+        if redirect:
+            self.send(
+                303,
+                b"",
+                "text/plain",
+                extra={
+                    "Location": "/",
+                    "Set-Cookie": [self.cookie(token), self.google_cookie("", 0)],
+                },
+            )
+        else:
+            self.send(
+                200,
+                {"user": user_json(u), "csrf": csrf},
+                extra={"Set-Cookie": [self.cookie(token), self.google_cookie("", 0)]},
+            )
+
+    def google_cookie(self, token, age=600):
+        return "iit_google=%s; Path=/api/auth/google; HttpOnly; SameSite=Lax; Max-Age=%s%s" % (
+            token,
+            age,
+            "; Secure" if SECURE else "",
+        )
+
+    def google_flow(self, c, consume=False):
+        cookies = SimpleCookie()
+        try:
+            cookies.load(self.headers.get("Cookie", ""))
+        except Exception:
+            raise APIError(400, "Google sign-in expired. Please start again.")
+        token = cookies["iit_google"].value if "iit_google" in cookies else ""
+        check(token, "Google sign-in expired. Please start again.")
+        hashed = hashlib.sha256(token.encode()).hexdigest()
+        query = (
+            "DELETE FROM oauth_flows WHERE token_hash=? AND expires>? RETURNING *"
+            if consume
+            else "SELECT * FROM oauth_flows WHERE token_hash=? AND expires>?"
+        )
+        row = c.execute(query, (hashed, time.time())).fetchone()
+        if consume:
+            c.commit()  # One use even if a provider subsequently fails.
+        check(row, "Google sign-in expired. Please start again.")
+        return token, row
+
+    def google_callback(self, c):
+        try:
+            query = parse_qs(urlsplit(self.path).query)
+            token, row = self.google_flow(c)
+            check(
+                hmac.compare_digest(query.get("flow", [""])[0].encode(), token.encode())
+                and row["verifier"],
+                "Google sign-in did not match this browser. Please start again.",
+            )
+            _, row = self.google_flow(c, consume=True)
+            check(
+                not query.get("error"), "Google sign-in was cancelled or denied. You can try again."
+            )
+            code = query.get("code", [""])[0]
+            check(
+                0 < len(code) <= 2048, "Google sign-in returned no valid code. Please start again."
+            )
+            identity = google_auth.exchange_identity(code, row["verifier"])
+            u = c.execute(
+                "SELECT * FROM users WHERE google_subject=?", (identity["sub"],)
+            ).fetchone()
+            if not u:
+                u = c.execute("SELECT * FROM users WHERE email=?", (identity["email"],)).fetchone()
+            if u:
+                check(
+                    not u["is_guest"]
+                    and not u["is_demo"]
+                    and u["email"] == identity["email"]
+                    and u["google_subject"] in (None, identity["sub"]),
+                    "This Google identity does not match the saved account. Contact Main Admin.",
+                    403,
+                )
+                check(
+                    u["active"] and u["verified"],
+                    "Your account is pending verification or inactive.",
+                    403,
+                )
+                c.execute(
+                    "UPDATE users SET google_subject=? WHERE id=?", (identity["sub"], u["id"])
+                )
+                self.sign_in(c, u, redirect=True)
+                return
+            pending = secrets.token_urlsafe(32)
+            c.execute(
+                "INSERT INTO oauth_flows VALUES(?, '', ?, ?)",
+                (
+                    hashlib.sha256(pending.encode()).hexdigest(),
+                    json.dumps(identity),
+                    time.time() + 600,
+                ),
+            )
+            self.send(
+                303,
+                b"",
+                "text/plain",
+                extra={"Location": "/?google=complete", "Set-Cookie": self.google_cookie(pending)},
+            )
+        except (APIError, google_auth.GoogleSignInError) as error:
+            message = error.message if isinstance(error, APIError) else str(error)
+            self.send(
+                303,
+                b"",
+                "text/plain",
+                extra={
+                    "Location": "/?" + urlencode({"google_error": message}),
+                    "Set-Cookie": self.google_cookie("", 0),
+                },
+            )
+
+    def guest_limit(self, c, action, maximum, window=3600):
+        # Only trust the platform's forwarded IP while running on Vercel.
+        address = self.client_address[0]
+        if os.environ.get("VERCEL") == "1":
+            forwarded = self.headers.get("X-Vercel-Forwarded-For", "").split(",")[0].strip()
+            try:
+                address = str(ipaddress.ip_address(forwarded))
+            except ValueError:
+                pass
+        key = "guest:" + action + ":" + hashlib.sha256(address.encode()).hexdigest()
+        stamp = time.time()
+        row = c.execute(
+            "INSERT INTO login_limits VALUES(?,1,?) ON CONFLICT(key) DO UPDATE SET attempts=CASE WHEN login_limits.start<? THEN 1 ELSE login_limits.attempts+1 END, start=CASE WHEN login_limits.start<? THEN excluded.start ELSE login_limits.start END RETURNING attempts",
+            (key, stamp, stamp - window, stamp - window),
+        ).fetchone()
+        c.commit()
+        check(
+            row["attempts"] <= maximum,
+            "Too many requests from this network. Please try again later.",
+            429,
         )
 
     def api(self, c, method, path):
+        if path == "/api/auth/google/callback" and method == "GET":
+            self.google_callback(c)
+            return
+        if path == "/api/auth/google/profile" and method == "GET":
+            _, row = self.google_flow(c)
+            check(not row["verifier"], "Finish Google sign-in first.")
+            profile = json.loads(row["profile"])
+            self.send(200, {"email": profile["email"], "name": profile["name"]})
+            return
+        if path in ("/api/auth/google/start", "/api/auth/google/complete") and method == "POST":
+            origin = self.headers.get("Origin")
+            check(
+                not origin or urlsplit(origin).netloc == self.headers.get("Host"),
+                "Cross-origin request denied.",
+                403,
+            )
+            b = self.body()
+            if path.endswith("/start"):
+                try:
+                    token, verifier = secrets.token_urlsafe(32), secrets.token_urlsafe(64)
+                    url = google_auth.authorize_url(verifier, token)
+                except google_auth.GoogleSignInError as error:
+                    raise APIError(503, str(error))
+                self.guest_limit(c, "google", 60, window=900)
+                c.execute("DELETE FROM oauth_flows WHERE expires<?", (time.time(),))
+                c.execute(
+                    "INSERT INTO oauth_flows(token_hash,verifier,expires) VALUES(?,?,?)",
+                    (hashlib.sha256(token.encode()).hexdigest(), verifier, time.time() + 600),
+                )
+                self.send(200, {"url": url}, extra={"Set-Cookie": self.google_cookie(token)})
+                return
+            name = field(b, "name", 2, 100)
+            affiliation = field(b, "affiliation", 2, 20)
+            check(affiliation in REPORTER_AFFILIATIONS[:3], "Choose Student, Faculty, or Staff.")
+            _, row = self.google_flow(c)
+            check(not row["verifier"], "Finish Google sign-in first.")
+            _, row = self.google_flow(c, consume=True)
+            profile = json.loads(row["profile"])
+            uid = insert_id(
+                c,
+                "INSERT INTO users(name,email,password,role,affiliation,google_subject,verified,created_at) VALUES(?,?,?,'student',?,?,1,?)",
+                (name, profile["email"], "!", affiliation, profile["sub"], now()),
+            )
+            audit(c, uid, "account.google_registered", str(uid))
+            self.sign_in(c, c.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone())
+            return
+        if path == "/api/anonymous" and method == "POST":
+            origin = self.headers.get("Origin")
+            check(
+                not origin or urlsplit(origin).netloc == self.headers.get("Host"),
+                "Cross-origin request denied.",
+                403,
+            )
+            b = self.body()
+            affiliation = field(b, "affiliation", 2, 20)
+            check(
+                affiliation in REPORTER_AFFILIATIONS, "Choose Student, Faculty, Staff, or Visitor."
+            )
+            self.guest_limit(c, "session", 10)
+            uid = insert_id(
+                c,
+                "INSERT INTO users(name,email,password,role,affiliation,verified,created_at,is_guest) VALUES(?,?,?,'student',?,1,?,1)",
+                (
+                    "Anonymous reporter",
+                    secrets.token_urlsafe(24) + "@guest.invalid",
+                    "!",
+                    affiliation,
+                    now(),
+                ),
+            )
+            # A private, short-lived browser session; no shared guest identity or staff role.
+            self.sign_in(c, c.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone())
+            return
         if path == "/api/demo/accounts" and method == "GET":
             accounts = (
                 [
@@ -840,50 +1098,16 @@ class Handler(BaseHTTPRequestHandler):
                 "Cross-origin request denied.",
                 403,
             )
-            b = self.body()
-            email = field(b, "email", 3, 254).lower()
-            password = field(b, "password", 12, 128)
-            check(re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", email), "Enter a valid email address.")
-            if path == "/api/register":
-                name = field(b, "name", 2, 100)
-                affiliation = field(b, "affiliation", 2, 100)
-                check(
-                    affiliation in ("Student", "Faculty", "Staff"), "Choose a campus affiliation."
-                )
-                c.execute(
-                    "INSERT INTO users(name,email,password,role,affiliation,created_at) VALUES(?,?,?,'student',?,?)",
-                    (name, email, password_hash(password), affiliation, now()),
-                )
-                self.send(
-                    201,
-                    {
-                        "message": "Account created. A Main Admin must verify your campus affiliation before you can sign in."
-                    },
-                )
-                return
-            limit_key = hashlib.sha256((self.client_address[0] + email).encode()).hexdigest()
-            limit = c.execute("SELECT * FROM login_limits WHERE key=?", (limit_key,)).fetchone()
-            check(
-                not limit or limit["start"] < time.time() - 900 or limit["attempts"] < 10,
-                "Too many sign-in attempts. Try again in 15 minutes.",
-                429,
+            raise APIError(
+                410,
+                "Email/password sign-in and registration have been removed. Continue with Google or continue anonymously.",
             )
-            c.execute(
-                "INSERT INTO login_limits VALUES(?,1,?) ON CONFLICT(key) DO UPDATE SET attempts=CASE WHEN login_limits.start<? THEN 1 ELSE login_limits.attempts+1 END, start=CASE WHEN login_limits.start<? THEN excluded.start ELSE login_limits.start END",
-                (limit_key, time.time(), time.time() - 900, time.time() - 900),
-            )
-            c.commit()  # Failed attempts must persist even when authentication raises.
-            u = c.execute("SELECT * FROM users WHERE email=?", (email,)).fetchone()
-            dummy = "00" * 16 + ":" + "00" * 32
-            valid = password_matches(password, u["password"] if u else dummy)
-            check(u and valid, "Email or password is incorrect.", 401)
-            c.execute("DELETE FROM login_limits WHERE key=?", (limit_key,))
-            self.sign_in(c, u)
-            return
 
         u, session = self.authenticate(c, method != "GET")
         if path == "/api/photos/inspect" and method == "POST":
             check(u["role"] != "validator", "Validators can only submit validation decisions.", 403)
+            if u["is_guest"]:
+                self.guest_limit(c, "photo", 20)
             b = self.body()
             check(type(b.get("analyze", False)) is bool, "Invalid analysis option.")
             if "report_id" in b:
@@ -958,6 +1182,8 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/reports" and method == "POST":
             check(u["role"] in ("student", "admin"), "This role cannot submit campus reports.", 403)
             b = self.body()
+            check(type(b.get("anonymous", False)) is bool, "Invalid anonymous reporting option.")
+            anonymous = bool(u["is_guest"] or b.get("anonymous", False))
             title, description = field(b, "title", 5, 150), field(b, "description", 10, 5000)
             category, categories = report_categories(b, field(b, "category"))
             try:
@@ -992,6 +1218,8 @@ class Handler(BaseHTTPRequestHandler):
                     "Indoor location storage is not initialized. Apply the indoor-location database migration.",
                     503,
                 )
+            if u["is_guest"]:
+                self.guest_limit(c, "report", 10)
             stamp = now()
             rid = insert_id(
                 c,
@@ -1010,7 +1238,10 @@ class Handler(BaseHTTPRequestHandler):
                     stamp,
                 ),
             )
-            c.execute("UPDATE reports SET categories=? WHERE id=?", (json.dumps(categories), rid))
+            c.execute(
+                "UPDATE reports SET categories=?,anonymous=? WHERE id=?",
+                (json.dumps(categories), int(anonymous), rid),
+            )
             if indoor:
                 c.execute(
                     "UPDATE reports SET indoor_location=? WHERE id=?", (json.dumps(indoor), rid)
@@ -1040,6 +1271,8 @@ class Handler(BaseHTTPRequestHandler):
                 )
                 b = self.body()
                 message = field(b, "message", 2, 2000)
+                if u["is_guest"]:
+                    self.guest_limit(c, "comment", 30)
                 internal = b.get("internal", False)
                 check(type(internal) is bool, "Invalid internal flag.")
                 check(not internal or u["role"] != "student", "Internal notes are for admins.", 403)
@@ -1514,7 +1747,9 @@ class Handler(BaseHTTPRequestHandler):
                     200,
                     [
                         user_json(x)
-                        for x in c.execute("SELECT * FROM users ORDER BY verified,created_at DESC")
+                        for x in c.execute(
+                            "SELECT * FROM users WHERE is_guest=0 ORDER BY verified,created_at DESC"
+                        )
                     ],
                 )
                 return
@@ -1523,6 +1758,11 @@ class Handler(BaseHTTPRequestHandler):
                 target_id = int(match[1])
                 target = c.execute("SELECT * FROM users WHERE id=?", (target_id,)).fetchone()
                 check(target, "User not found.", 404)
+                check(
+                    not target["is_guest"],
+                    "Anonymous sessions cannot be assigned staff access.",
+                    403,
+                )
                 check(target_id != u["id"], "You cannot change your own access.")
                 b = self.body()
                 role = b.get("role", target["role"])
@@ -1807,7 +2047,7 @@ def seed_demo():
                     ),
                 )
             notify(c, student, rid, "Demo report: " + title)
-    print("Demo accounts created. Password for all demo accounts: " + password)
+    print("Demo accounts created. Enable demo mode and use the demo account buttons to enter.")
     print(
         "admin@iitvoice.local | validator@iitvoice.local | student@iitvoice.local | faculty@iitvoice.local"
     )
@@ -1848,15 +2088,13 @@ def main():
         seed_demo()
         return
     if args.create_admin:
-        import getpass
-
         create_account(
-            args.create_admin,
+            university_email(args.create_admin.strip()),
             input("Name: ").strip(),
             "admin",
-            getpass.getpass("Password (12+ characters): "),
+            secrets.token_urlsafe(32),
         )
-        print("Main Admin created.")
+        print("Main Admin created. Continue with Google using this university email.")
         return
     if DEMO_LOGIN:
         ensure_demo_accounts()

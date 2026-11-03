@@ -941,31 +941,6 @@ table .btn {
   margin-bottom: 8px;
 }
 
-.auth-tabs {
-  display: flex;
-  gap: 8px;
-  padding: 5px;
-  background: #f1f0eb;
-  border-radius: 25px;
-  margin-bottom: 25px;
-}
-
-.auth-tabs button {
-  flex: 1;
-  padding: 9px;
-  border-radius: 22px;
-  background: none;
-  color: var(--muted);
-  font-size: 12px;
-}
-
-.auth-tabs button.active {
-  background: white;
-  box-shadow: 0 2px 7px #211f1b09;
-  color: var(--maroon);
-  font-weight: 600;
-}
-
 .auth-card .btn.solid {
   width: 100%;
   margin-top: 8px;
@@ -1690,7 +1665,15 @@ details {
 
 @media (max-width: 760px) {
   .location-map-stage {
+    height: clamp(240px, 34svh, 320px);
+  }
+
+  .location-map-stage.is-browsing {
     height: 640px;
+  }
+
+  .location-map-stage.is-floor-focused {
+    height: clamp(500px, 74svh, 640px);
   }
 
   .location-map-stage.is-browsing > .map.pick {
@@ -1747,6 +1730,46 @@ details {
   margin-top: 24px;
   padding-top: 22px;
   border-top: 1px solid var(--line);
+}
+
+.anonymous-access {
+  margin-top: 22px;
+}
+
+.google-sign-in.btn {
+  width: 100%;
+  min-height: 44px;
+  border-radius: 10px;
+  gap: 12px;
+}
+
+.google-sign-in.btn:disabled {
+  opacity: 1;
+  cursor: not-allowed;
+  color: var(--muted);
+}
+
+.google-access .meta {
+  margin: 9px 0 18px;
+}
+
+.anonymous-access > .btn {
+  width: 100%;
+  color: var(--maroon);
+}
+
+.anonymous-access .meta {
+  margin-top: 9px;
+}
+
+.report-privacy {
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+
+.report-privacy .meta {
+  margin-top: 8px;
 }
 
 .demo-accounts h3 {
@@ -2308,10 +2331,6 @@ input[type='file'] {
     width: 100%;
   }
 
-  .auth-tabs button {
-    font-size: 13px;
-  }
-
   .footer {
     padding: 0 16px 20px;
     flex-wrap: wrap;
@@ -2519,17 +2538,6 @@ input[type='file'] {
 .auth-story h1 span {
   -webkit-text-stroke: 0.4px #76500a;
   text-shadow: 0 1px 2px #ffffffb3;
-}
-
-.auth-tabs {
-  background: var(--accent-soft);
-  border: 1px solid #e9d9ad;
-}
-
-.auth-tabs button.active {
-  background: var(--maroon);
-  color: white;
-  box-shadow: none;
 }
 
 .summary-filters {
@@ -2988,5 +2996,30 @@ input[type='file'] {
     align-items: flex-start;
     flex-direction: column;
     gap: 5px;
+  }
+}
+
+.report-marker-editable {
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.touch-pin .map-pin {
+  margin: 8px 8px 4px;
+}
+
+@media (pointer: coarse) and (max-width: 760px) {
+  .location-step-actions {
+    position: sticky;
+    bottom: -18px;
+    z-index: 5;
+    padding: 12px 0;
+    background: white;
+    border-top: 1px solid var(--line);
+  }
+
+  .location-step-actions .btn.solid {
+    flex: 1;
   }
 }

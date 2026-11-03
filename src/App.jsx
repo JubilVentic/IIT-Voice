@@ -15,12 +15,46 @@ import {
 } from './pages/Dashboards.jsx';
 import { NewReport, ReportDetails } from './pages/ReportForms.jsx';
 
-function Auth({ signIn, api, toast }) {
-  const [register, setRegister] = useState(false),
+function Auth({ signIn, api }) {
+  const [mode, setMode] = useState('access'),
     [demoAccounts, setDemoAccounts] = useState([]),
-    [demoMode, setDemoMode] = useState('local');
+    [demoMode, setDemoMode] = useState('local'),
+    [googleEnabled, setGoogleEnabled] = useState(false),
+    [googleProfile, setGoogleProfile] = useState(null),
+    [googleError, setGoogleError] = useState(''),
+    [googleReturn] = useState(() => window.location.search);
+  const googleProfileStep = mode === 'google';
+  const anonymous = mode === 'anonymous';
   useEffect(() => {
     let alive = true;
+    const query = new URLSearchParams(googleReturn);
+    const completeGoogle = query.get('google') === 'complete';
+    if (query.has('google_error')) setGoogleError(query.get('google_error'));
+    if (query.has('google') || query.has('google_error')) {
+      query.delete('google');
+      query.delete('google_error');
+      window.history.replaceState(
+        null,
+        '',
+        window.location.pathname + (query.size ? `?${query}` : '') + window.location.hash
+      );
+    }
+    api('/api/auth/options')
+      .then((result) => {
+        if (alive) setGoogleEnabled(result.google);
+      })
+      .catch(() => {});
+    if (completeGoogle)
+      api('/api/auth/google/profile')
+        .then((profile) => {
+          if (alive) {
+            setGoogleProfile(profile);
+            setMode('google');
+          }
+        })
+        .catch((error) => {
+          if (alive) setGoogleError(error.message);
+        });
     api('/api/demo/accounts')
       .then((result) => {
         if (alive) {
@@ -32,18 +66,12 @@ function Auth({ signIn, api, toast }) {
     return () => {
       alive = false;
     };
-  }, [api]);
+  }, [api, googleReturn]);
   const action = useAction();
   const submit = (e) => {
     e.preventDefault();
     const values = formValues(e.currentTarget);
-    action.run(async () => {
-      if (register) {
-        const result = await api('/api/register', { method: 'POST', body: values });
-        setRegister(false);
-        toast(result.message);
-      } else await signIn(values);
-    });
+    action.run(() => signIn(values, googleProfileStep ? 'google' : 'anonymous'));
   };
   return (
     <div className="auth-page">
@@ -70,76 +98,144 @@ function Auth({ signIn, api, toast }) {
           </div>
         </section>
         <section className="auth-card">
-          <div className="auth-tabs">
-            <button
-              type="button"
-              data-auth="login"
-              className={!register ? 'active' : ''}
-              onClick={() => setRegister(false)}
-            >
-              Sign in
-            </button>
-            <button
-              type="button"
-              data-auth="register"
-              className={register ? 'active' : ''}
-              onClick={() => setRegister(true)}
-            >
-              Request an account
-            </button>
-          </div>
-          <h2>{register ? 'Join IIT Voice' : 'Welcome back.'}</h2>
+          <h2>
+            {anonymous
+              ? 'Report anonymously'
+              : googleProfileStep
+                ? 'Complete your profile'
+                : 'Welcome to IIT Voice.'}
+          </h2>
           <p className="muted">
-            {register
-              ? 'Your affiliation will be reviewed by a Main Admin.'
-              : 'Sign in to your campus workspace.'}
+            {anonymous
+              ? 'No account or university email needed. Choose how you are connected to the campus.'
+              : googleProfileStep
+                ? 'Google confirmed your university email. Choose your campus affiliation to start reporting immediately.'
+                : 'Continue with your university Google account or report anonymously.'}
           </p>
-          <form id="auth-form" key={String(register)} onSubmit={submit}>
-            {register && (
-              <>
-                <Field label="Full name">
-                  <input name="name" required minLength={2} maxLength={100} autoComplete="name" />
-                </Field>
-                <Field label="Campus affiliation">
-                  <select name="affiliation">
-                    <option>Student</option>
-                    <option>Faculty</option>
-                    <option>Staff</option>
+          <ErrorMessage id="auth-error">{action.error}</ErrorMessage>
+          <ErrorMessage>{googleError}</ErrorMessage>
+          {(anonymous || googleProfileStep) && (
+            <form id="auth-form" key={mode} onSubmit={submit}>
+              {googleProfileStep && (
+                <p className="notice">Google account: {googleProfile?.email}</p>
+              )}
+              {anonymous && (
+                <Field
+                  label="Reporter role"
+                  help="Self-declared affiliation; this does not grant staff or admin permissions."
+                >
+                  <select name="affiliation" required defaultValue="">
+                    <option value="" disabled>
+                      Choose your role
+                    </option>
+                    {['Student', 'Faculty', 'Staff', 'Visitor'].map((role) => (
+                      <option key={role}>{role}</option>
+                    ))}
                   </select>
                 </Field>
-              </>
-            )}
-            <Field label="Email address">
-              <input
-                name="email"
-                type="email"
-                required
-                autoComplete="username"
-                maxLength={254}
-                placeholder="you@university.edu"
-              />
-            </Field>
-            <Field label="Password" help="At least 12 characters.">
-              <input
-                name="password"
-                type="password"
-                required
-                minLength={12}
-                maxLength={128}
-                autoComplete={register ? 'new-password' : 'current-password'}
-              />
-            </Field>
-            <ErrorMessage id="auth-error">{action.error}</ErrorMessage>
-            <button className="btn solid" type="submit" disabled={action.busy}>
-              {action.busy ? 'Please wait…' : `${register ? 'Request campus access' : 'Sign in'} →`}
-            </button>
-          </form>
+              )}
+              {googleProfileStep && (
+                <>
+                  <Field label="Full name">
+                    <input
+                      name="name"
+                      required
+                      minLength={2}
+                      maxLength={100}
+                      autoComplete="name"
+                      defaultValue={googleProfile?.name || ''}
+                    />
+                  </Field>
+                  <Field label="Campus affiliation">
+                    <select name="affiliation" required defaultValue="">
+                      <option value="" disabled>
+                        Choose your affiliation
+                      </option>
+                      <option>Student</option>
+                      <option>Faculty</option>
+                      <option>Staff</option>
+                    </select>
+                  </Field>
+                </>
+              )}
+              <button className="btn solid" type="submit" disabled={action.busy}>
+                {action.busy
+                  ? 'Please wait…'
+                  : `${anonymous ? 'Start anonymous report' : 'Continue to IIT Voice'} →`}
+              </button>
+            </form>
+          )}
+          {!anonymous && !googleProfileStep && (
+            <section className="google-access" aria-label="Google sign-in">
+              <button
+                type="button"
+                className="btn google-sign-in"
+                disabled={action.busy || !googleEnabled}
+                aria-describedby="google-access-help"
+                onClick={() =>
+                  action.run(async () => {
+                    setGoogleError('');
+                    const result = await api('/api/auth/google/start', {
+                      method: 'POST',
+                      body: {},
+                    });
+                    window.location.assign(result.url);
+                  })
+                }
+              >
+                <svg width="20" height="20" viewBox="0 0 48 48" aria-hidden="true">
+                  <path
+                    fill="#EA4335"
+                    d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5Z"
+                  />
+                  <path
+                    fill="#4285F4"
+                    d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.25 5.48-4.76 7.18l7.73 6c4.51-4.18 7.07-10.36 7.07-17.65Z"
+                  />
+                  <path
+                    fill="#FBBC05"
+                    d="M10.53 28.59A14.41 14.41 0 0 1 9.77 24c0-1.59.27-3.13.76-4.59l-7.98-6.19A23.87 23.87 0 0 0 0 24c0 3.87.93 7.53 2.56 10.78l7.97-6.19Z"
+                  />
+                  <path
+                    fill="#34A853"
+                    d="M24 48c6.48 0 11.93-2.13 15.91-5.8l-7.73-6c-2.15 1.45-4.92 2.3-8.18 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48Z"
+                  />
+                </svg>
+                Continue with Google
+              </button>
+              <p id="google-access-help" className="meta">
+                {googleEnabled
+                  ? 'Use your @g.msuiit.edu.ph university Google account. New reporters can start immediately without Main Admin approval.'
+                  : 'Google sign-in needs one-time setup. You can continue anonymously while it is unavailable.'}
+              </p>
+            </section>
+          )}
           <div className="notice">
-            {register
-              ? 'Registration never grants admin permissions.'
-              : 'Students and campus members enter the campus app. Staff accounts enter their assigned workspace.'}
+            {anonymous
+              ? 'Your role is visible to reviewers, but no name or email is collected. Follow your reports in this browser for up to 12 hours. Signing out, clearing cookies, or changing devices loses access.'
+              : googleProfileStep
+                ? 'Your affiliation describes your reporter profile and does not grant admin permissions.'
+                : 'Students and campus members enter the campus app. Staff accounts enter their assigned workspace.'}
           </div>
-          {!register && demoAccounts.length > 0 && (
+          {!googleProfileStep && (
+            <div className="anonymous-access">
+              <button
+                type="button"
+                className="btn"
+                disabled={action.busy}
+                onClick={() => setMode(anonymous ? 'access' : 'anonymous')}
+              >
+                {anonymous ? 'Back to access options' : 'Continue anonymously'}
+              </button>
+              {!anonymous && (
+                <p className="meta">
+                  For students, faculty, staff, and visitors. You can also sign in and choose
+                  anonymous reporting when submitting.
+                </p>
+              )}
+            </div>
+          )}
+          {mode === 'access' && demoAccounts.length > 0 && (
             <section className="demo-accounts" aria-label="Demo accounts">
               <h3>Try a demo account</h3>
               <p className="meta">
@@ -155,7 +251,7 @@ function Auth({ signIn, api, toast }) {
                     className="btn demo-account"
                     data-demo-account={account.id}
                     disabled={action.busy}
-                    onClick={() => action.run(() => signIn({ account_id: account.id }, true))}
+                    onClick={() => action.run(() => signIn({ account_id: account.id }, 'demo'))}
                   >
                     <strong>
                       {account.role === 'student'
@@ -170,7 +266,7 @@ function Auth({ signIn, api, toast }) {
               </div>
             </section>
           )}
-          {!register && (
+          {mode === 'access' && (
             <section className="auth-qr" aria-label="Open IIT Voice on your phone">
               <a href="https://iit-voice.vercel.app/" target="_blank" rel="noreferrer">
                 <img
@@ -340,7 +436,9 @@ function Shell({ children, logout }) {
               <span className="avatar">{initials}</span>
               <div>
                 {user.name}
-                <small>{labels[user.role]}</small>
+                <small>
+                  {user.is_guest ? `${user.affiliation} · Anonymous` : labels[user.role]}
+                </small>
               </div>
             </div>
             <button
@@ -393,6 +491,12 @@ function Shell({ children, logout }) {
           </details>
         </div>
         <main id="main">
+          {Boolean(user.is_guest) && (
+            <div className="notice" role="status">
+              Anonymous reporting · {user.affiliation} (self-declared). Your reports are available
+              only in this browser session, for up to 12 hours. Signing out loses access.
+            </div>
+          )}
           {data.demo_mode === 'online' && (
             <div className="notice" role="status">
               Demo workspace · Shared test data only. Your changes do not affect regular IIT Voice
@@ -492,16 +596,24 @@ export default function App() {
     };
   }, [api]);
   useEffect(() => () => clearTimeout(toastTimer.current), []);
-  async function signIn(values, demo = false) {
-    const session = await api(demo ? '/api/demo/login' : '/api/login', {
-      method: 'POST',
-      body: values,
-    });
+  async function signIn(values, mode) {
+    const session = await api(
+      mode === 'demo'
+        ? '/api/demo/login'
+        : mode === 'google'
+          ? '/api/auth/google/complete'
+          : '/api/anonymous',
+      {
+        method: 'POST',
+        body: values,
+      }
+    );
     csrf.current = session.csrf;
     setUser(session.user);
     setPage('overview');
     setBootError('');
     await refresh();
+    if (session.user.is_guest) setModal({ type: 'new' });
   }
   async function logout() {
     try {
@@ -531,7 +643,7 @@ export default function App() {
       {loading ? (
         <div className="loading">Loading IIT Voice…</div>
       ) : !user ? (
-        <Auth signIn={signIn} api={api} toast={toast} />
+        <Auth signIn={signIn} api={api} />
       ) : !data ? (
         <div className="loading">
           <p role="alert">{bootError || 'Unable to load your campus workspace.'}</p>
