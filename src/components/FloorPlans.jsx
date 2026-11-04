@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import L from 'leaflet';
 import { ReportMap, pinIcon } from './Maps.jsx';
+import { pinAppearance } from '../map-markers.js';
+import { statusLabels, useVoice } from '../lib.js';
 import {
   buildingPin,
   hasIndoorPoint,
@@ -27,19 +29,27 @@ const bounds = [
   [750, 1000],
 ];
 
-export function FloorPlan({ location, onPick }) {
+export function FloorPlan({ location, onPick, report, reports }) {
+  const { openReport } = useVoice();
   const container = useRef(null),
     mapRef = useRef(null),
     marker = useRef(null),
     areaHighlight = useRef(null),
     choosePoint = useRef(null),
     selectedPoint = useRef(null);
-  const callbacks = useRef({ onPick });
-  callbacks.current = { onPick };
+  const callbacks = useRef({ onPick, openReport });
+  callbacks.current = { onPick, openReport };
   const [error, setError] = useState('');
   const label = indoorLabel({ ...location, x: null, y: null });
   const area = indoorArea(location);
   const editable = Boolean(onPick);
+  const summaryView = Boolean(reports);
+  const matchingReports = reports?.filter(
+    (r) =>
+      r.indoor_location?.building_id === location.building_id &&
+      r.indoor_location?.floor_id === location.floor_id &&
+      hasIndoorPoint(r.indoor_location)
+  );
   const [top, right, bottom, left] = floorInsets[location.floor_id];
   const visibleBounds = [
     [(750 * bottom) / 100, (1000 * left) / 100],
@@ -86,7 +96,7 @@ export function FloorPlan({ location, onPick }) {
       // A hidden wizard step has no size; preserve the map view until it is visible again.
       if (!container.current?.clientWidth || !container.current?.clientHeight) return;
       map.invalidateSize();
-      if (!fitted && container.current?.clientWidth && container.current?.clientHeight) {
+      if (!fitted || summaryView) {
         map.fitBounds(visibleBounds, { padding: [12, 12], animate: false });
         fitted = true;
       }
@@ -103,7 +113,7 @@ export function FloorPlan({ location, onPick }) {
       choosePoint.current = null;
       selectedPoint.current = null;
     };
-  }, [location.building_id, location.floor_id, editable]);
+  }, [location.building_id, location.floor_id, editable, summaryView]);
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
@@ -116,13 +126,15 @@ export function FloorPlan({ location, onPick }) {
       return;
     }
     const point = [750 * (1 - location.y), 1000 * location.x];
+    const icon = pinIcon(editable || !report ? { editable } : pinAppearance(report, 'priority'));
     selectedPoint.current = point;
     if (marker.current) {
       marker.current.getElement()?.classList.add('pin-glide');
       marker.current.setLatLng(point);
+      marker.current.setIcon(icon);
     } else
       marker.current = L.marker(point, {
-        icon: pinIcon({ editable }),
+        icon,
         draggable: editable,
         autoPan: true,
         title: editable ? 'Drag to adjust indoor location' : 'Reported indoor location',
@@ -134,8 +146,19 @@ export function FloorPlan({ location, onPick }) {
         })
         .addTo(map);
     marker.current.unbindTooltip();
+    if (!editable && report) {
+      marker.current
+        .getElement()
+        ?.setAttribute(
+          'aria-label',
+          `${area?.name || 'Reported indoor location'} · ${statusLabels[report.status]}`
+        );
+    }
     if (area) {
-      marker.current.bindTooltip(area.name, { direction: 'top', offset: [0, -30] });
+      marker.current.bindTooltip(
+        `${area.name}${!editable && report ? ` · ${statusLabels[report.status]}` : ''}`,
+        { direction: 'top', offset: [0, -30] }
+      );
       areaHighlight.current = L.polygon(
         area.outline.map(([x, y]) => [750 * (1 - y), 1000 * x]),
         {
@@ -147,7 +170,42 @@ export function FloorPlan({ location, onPick }) {
         }
       ).addTo(map);
     }
-  }, [location, editable]);
+  }, [location, editable, report]);
+  useEffect(() => {
+    if (!mapRef.current || editable || !reports) return;
+    const markers = L.layerGroup().addTo(mapRef.current);
+    for (const r of reports) {
+      const point = r.indoor_location;
+      if (
+        !hasIndoorPoint(point) ||
+        point.building_id !== location.building_id ||
+        point.floor_id !== location.floor_id
+      )
+        continue;
+      const label = `${r.title} · ${statusLabels[r.status]} · ${indoorArea(point)?.name || 'Indoor location'}`;
+      const popup = document.createElement('div');
+      const title = document.createElement('strong');
+      title.textContent = label;
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'btn link';
+      button.textContent = 'View concern →';
+      button.addEventListener('click', () => callbacks.current.openReport(r.id));
+      popup.append(title, document.createElement('br'), button);
+      const marker = L.marker([750 * (1 - point.y), 1000 * point.x], {
+        icon: pinIcon(pinAppearance(r, 'priority')),
+        title: label,
+        alt: label,
+      })
+        .bindPopup(popup)
+        .addTo(markers);
+      const element = marker.getElement();
+      element.setAttribute('aria-label', label);
+      element.dataset.reportId = r.id;
+      element.dataset.status = r.status;
+    }
+    return () => markers.remove();
+  }, [reports, location.building_id, location.floor_id, editable]);
   return (
     <div className="floor-plan-panel">
       <div className="panel-head">
@@ -171,26 +229,38 @@ export function FloorPlan({ location, onPick }) {
         </button>
       </div>
       <div ref={container} className="map floor-plan-map" aria-label={`${label} floor plan`} />
+      {!editable && report && (
+        <p className="map-caption">
+          {statusLabels[report.status]}
+          {['resolved', 'closed'].includes(report.status)
+            ? ' · ✓ Work marked complete. Pin retained at the reported location.'
+            : ' · Pin shows the reported location.'}
+        </p>
+      )}
       <p className="map-caption" role="status">
-        {editable
-          ? hasIndoorPoint(location)
-            ? area
-              ? `Selected area: ${area.name}. Drag the pin to refine the exact spot.`
-              : 'Indoor pin selected. This area has no confirmed label; add the room or area in Location details.'
-            : 'Tap the room, corridor, or area where the concern is located. Zoom in for detail.'
-          : area
-            ? `Reported area: ${area.name}. Zoom in to inspect the location.`
-            : 'Reported indoor position. Zoom in to inspect the location.'}
+        {reports
+          ? `${matchingReports.length} of ${reports.length} matching reports have indoor pins on this floor. Select a pin for details.`
+          : editable
+            ? hasIndoorPoint(location)
+              ? area
+                ? `Selected area: ${area.name}. Drag the pin to refine the exact spot.`
+                : 'Indoor pin selected. This area has no confirmed label; add the room or area in Location details.'
+              : 'Tap the room, corridor, or area where the concern is located. Zoom in for detail.'
+            : area
+              ? `Reported area: ${area.name}. Zoom in to inspect the location.`
+              : 'Reported indoor position. Zoom in to inspect the location.'}
       </p>
       {error && (
         <p className="inline-error" role="alert">
           {error}
         </p>
       )}
-      <p className="map-caption">
-        Cleaned photo of the supplied plan. Some labels are unverified; add the room or office name
-        in Location details.
-      </p>
+      {!reports && (
+        <p className="map-caption">
+          Cleaned photo of the supplied plan. Some labels are unverified; add the room or office
+          name in Location details.
+        </p>
+      )}
     </div>
   );
 }

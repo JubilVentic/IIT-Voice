@@ -11,6 +11,7 @@ import { categoryPins, hasMapPin, priorityPins } from '../map-markers.js';
 import { ErrorMessage, Field, Hero, Panel, ReportList, Stats } from './UI.jsx';
 import { CategoryOptions } from './Categories.jsx';
 import { ReportMap } from './Maps.jsx';
+import { BuildingSummary } from './BuildingSummary.jsx';
 
 const defaults = {
   period: 'all',
@@ -20,6 +21,8 @@ const defaults = {
   office: '',
   status: '',
   priority: '',
+  building: '',
+  floor: '',
 };
 const statusColors = {
   submitted: '#7a203c',
@@ -180,10 +183,16 @@ export function ReportAnalytics() {
     filters.category ||
     filters.office ||
     filters.status ||
-    filters.priority;
+    filters.priority ||
+    filters.building ||
+    filters.floor;
   const invalidDates = range.from && range.through && range.from > range.through;
   function change(key, value) {
-    setFilters((current) => ({ ...current, [key]: value }));
+    setFilters((current) => ({
+      ...current,
+      [key]: value,
+      ...(key === 'building' ? { floor: '' } : {}),
+    }));
   }
   return (
     <div className="report-analytics">
@@ -285,8 +294,9 @@ export function ReportAnalytics() {
         </ErrorMessage>
         <div className="summary-scope">
           <p className="meta" role="status" data-summary-count>
-            Showing <strong>{visible.length}</strong> of {data.reports.length} reports. All charts
-            and lists below use this selection.
+            Showing <strong>{visible.length}</strong> of {data.reports.length} reports. Charts and
+            lists use this selection. Building comparisons keep other buildings and floors visible
+            for context.
           </p>
           {activeFilters && (
             <button type="button" className="btn" onClick={() => setFilters(defaults)}>
@@ -318,6 +328,13 @@ export function ReportAnalytics() {
           No reports match this selection. Adjust or reset the filters to see report activity.
         </p>
       )}
+      <BuildingSummary
+        reports={data.reports}
+        visible={visible}
+        offices={data.offices}
+        filters={{ ...filters, ...range }}
+        onChange={change}
+      />
       <div className="summary-grid">
         <Panel title="Reports over time">
           <ReportTrend trend={trend} />

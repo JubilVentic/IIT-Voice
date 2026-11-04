@@ -1,5 +1,13 @@
-import { matchesCategory, reportCategories, statusLabels } from './lib.js';
+import {
+  matchesCategory,
+  reportCategories,
+  statusLabels,
+  isActiveReport,
+  isCompletedReport,
+} from './lib.js';
+export { isActiveReport, isCompletedReport } from './lib.js';
 import { hasMapPin } from './map-markers.js';
+import { reportBuildingLocation } from './building-reports.js';
 
 const dayMs = 86400000;
 const calendar = new Intl.DateTimeFormat('en-CA', {
@@ -8,9 +16,6 @@ const calendar = new Intl.DateTimeFormat('en-CA', {
   month: '2-digit',
   day: '2-digit',
 });
-export const isActiveReport = (report) =>
-  !['resolved', 'closed', 'rejected', 'duplicate'].includes(report.status);
-export const isCompletedReport = (report) => ['resolved', 'closed'].includes(report.status);
 
 export function submissionDay(value) {
   const date = new Date(value);
@@ -34,11 +39,21 @@ export function dateWindow(period, today = submissionDay(new Date())) {
 
 export function filterSummaryReports(
   reports,
-  { from = '', through = '', category = '', office = '', status = '', priority = '' } = {}
+  {
+    from = '',
+    through = '',
+    category = '',
+    office = '',
+    status = '',
+    priority = '',
+    building = '',
+    floor = '',
+  } = {}
 ) {
   if (from && through && from > through) return [];
   return reports.filter((report) => {
     const day = submissionDay(report.created_at);
+    const location = building || floor ? reportBuildingLocation(report) : null;
     return (
       (!from || day >= from) &&
       (!through || (day && day <= through)) &&
@@ -48,7 +63,9 @@ export function filterSummaryReports(
           ? report.office_id == null
           : report.office_id === Number(office))) &&
       (!status || report.status === status) &&
-      (!priority || report.priority === priority)
+      (!priority || report.priority === priority) &&
+      (!building || location.buildingId === building) &&
+      (!floor || location.floorId === floor)
     );
   });
 }

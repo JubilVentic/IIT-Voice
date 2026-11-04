@@ -835,6 +835,16 @@ class Handler(BaseHTTPRequestHandler):
             and hostname in ("127.0.0.1", "localhost", "::1")
         )
 
+    def completion_test_enabled(self):
+        return (
+            os.environ.get("IIT_VOICE_TEST_COMPLETION_BYPASS") == "1"
+            and DEMO_LOGIN
+            and not DATABASE_URL
+            and not self._online_demo
+            and not os.environ.get("VERCEL")
+            and self.demo_enabled()
+        )
+
     def sign_in(self, c, u, redirect=False):
         check(
             u["role"] != "office" or u["office_id"] is not None,
@@ -1161,6 +1171,8 @@ class Handler(BaseHTTPRequestHandler):
                     "demo_mode": "online"
                     if self._online_demo
                     else ("local" if DEMO_LOGIN else None),
+                    "completion_test_enabled": u["role"] in ("admin", "office")
+                    and self.completion_test_enabled(),
                     "reports": reports,
                     "offices": offices,
                     "routing": routing,
@@ -1405,6 +1417,18 @@ class Handler(BaseHTTPRequestHandler):
             if method == "PATCH" and not sub:
                 check(u["role"] in ("admin", "validator", "office"), "Staff access required.", 403)
                 b = self.body()
+                test_bypass = b.pop("test_completion_bypass", False)
+                check(type(test_bypass) is bool, "Invalid test completion option.")
+                if test_bypass:
+                    check(
+                        u["role"] in ("admin", "office") and self.completion_test_enabled(),
+                        "Completion bypass is available only in the local test demo.",
+                        403,
+                    )
+                    check(
+                        b.get("status") in ("resolved", "closed"),
+                        "The test bypass is only for completion or closure.",
+                    )
                 if u["role"] in ("validator", "office"):
                     validator = u["role"] == "validator"
                     allowed = (
@@ -1413,7 +1437,7 @@ class Handler(BaseHTTPRequestHandler):
                         else {"status", "note"}
                     )
                     check(not set(b) - allowed, "This role cannot change those report fields.", 403)
-                    status, note = b.get("status"), field(b, "note", 2, 2000)
+                    status, note = b.get("status"), field(b, "note", 0 if validator else 2, 2000)
                     office, assigned = r["office_id"], r["assigned_to"]
                     priority = r["priority"]
                     if validator:
@@ -1459,9 +1483,12 @@ class Handler(BaseHTTPRequestHandler):
                             "Work is already in progress. Use Post update for notes, or Mark work complete when finished.",
                         )
                         check(
-                            status != "resolved" or has_completion_evidence(c, r),
+                            status != "resolved" or test_bypass or has_completion_evidence(c, r),
                             "Upload an after-work evidence photo before marking this concern resolved.",
                         )
+                    if test_bypass:
+                        note = "[LOCAL TEST ONLY: after-work photo requirement bypassed] " + note
+                        audit(c, u["id"], "report.test_completion_bypass", str(rid), status)
                     c.execute(
                         "UPDATE reports SET status=?,priority=?,office_id=?,assigned_to=?,updated_at=? WHERE id=?",
                         (status, priority, office, assigned, now(), rid),
@@ -1471,7 +1498,8 @@ class Handler(BaseHTTPRequestHandler):
                         if priority != r["priority"]
                         else ""
                     )
-                    event(c, rid, u["id"], "status", status + " — " + priority_note + note)
+                    details = (priority_note + note).strip()
+                    event(c, rid, u["id"], "status", status + (" — " + details if details else ""))
                     audit(
                         c,
                         u["id"],
@@ -1599,6 +1627,7 @@ class Handler(BaseHTTPRequestHandler):
                 }
                 check(
                     status not in ("resolved", "closed")
+                    or test_bypass
                     or (not reset_evidence and has_completion_evidence(c, context_report)),
                     "Upload or recheck an after-work photo against the current concern before resolving or closing it.",
                 )
@@ -1641,6 +1670,9 @@ class Handler(BaseHTTPRequestHandler):
                         rid,
                     ),
                 )
+                if test_bypass:
+                    note = "[LOCAL TEST ONLY: after-work photo requirement bypassed] " + note
+                    audit(c, u["id"], "report.test_completion_bypass", str(rid), status)
                 if reset_evidence:
                     c.execute(
                         "UPDATE reports SET evidence_round=evidence_round+1 WHERE id=?", (rid,)

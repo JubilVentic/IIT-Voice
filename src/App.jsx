@@ -612,8 +612,12 @@ export default function App() {
     setUser(session.user);
     setPage('overview');
     setBootError('');
-    await refresh();
-    if (session.user.is_guest) setModal({ type: 'new' });
+    try {
+      await refresh();
+      if (session.user.is_guest) setModal({ type: 'new' });
+    } catch (error) {
+      setBootError(error.message);
+    }
   }
   async function logout() {
     try {
@@ -640,8 +644,15 @@ export default function App() {
   };
   return (
     <VoiceContext.Provider value={value}>
-      {loading ? (
-        <div className="loading">Loading IIT Voice…</div>
+      {loading || (user && !data && !bootError) ? (
+        <div
+          className="workspace-pending"
+          role="status"
+          aria-label="Loading workspace"
+          aria-busy="true"
+        >
+          <span className="workspace-spinner" aria-hidden="true" />
+        </div>
       ) : !user ? (
         <Auth signIn={signIn} api={api} />
       ) : !data ? (
@@ -649,7 +660,10 @@ export default function App() {
           <p role="alert">{bootError || 'Unable to load your campus workspace.'}</p>
           <button
             className="btn primary"
-            onClick={() => refresh().catch((e) => setBootError(e.message))}
+            onClick={() => {
+              setBootError('');
+              refresh().catch((e) => setBootError(e.message));
+            }}
           >
             Try again
           </button>
@@ -664,7 +678,11 @@ export default function App() {
       )}
       {modal && user && data && (
         <Dialog
-          className={modal.type === 'new' ? 'report-dialog' : ''}
+          className={
+            modal.type === 'new' || user.role === 'student'
+              ? 'report-dialog'
+              : 'staff-report-dialog'
+          }
           onClose={() => setModal(null)}
         >
           {modal.type === 'new' ? <NewReport /> : <ReportDetails key={modal.id} id={modal.id} />}

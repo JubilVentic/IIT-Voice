@@ -1,4 +1,4 @@
-import { matchesCategory } from './lib.js';
+import { matchesCategory, isActiveReport, isCompletedReport } from './lib.js';
 
 export const categoryPins = {
   'Facilities, Infrastructure & Maintenance': { color: '#95612b', symbol: '1' },
@@ -19,11 +19,13 @@ export const priorityPins = {
   urgent: { color: '#b62f46', symbol: 'U' },
 };
 
-export const pinAppearance = (report, colorBy) =>
-  (colorBy === 'category' ? categoryPins[report.category] : priorityPins[report.priority]) || {
+export const pinAppearance = (report, colorBy) => ({
+  ...((colorBy === 'category' ? categoryPins[report.category] : priorityPins[report.priority]) || {
     color: '#7a203c',
     symbol: '?',
-  };
+  }),
+  completed: isCompletedReport(report),
+});
 export const hasMapPin = (report) =>
   Number.isFinite(report.latitude) && Number.isFinite(report.longitude);
 
@@ -33,6 +35,11 @@ export function filterMapReports(reports, { category = '', priority = '', status
       hasMapPin(report) &&
       matchesCategory(report, category) &&
       (!priority || report.priority === priority) &&
-      (!status || report.status === status)
+      (!status ||
+        (status === 'active'
+          ? isActiveReport(report)
+          : status === 'completed'
+            ? isCompletedReport(report)
+            : report.status === status))
   );
 }

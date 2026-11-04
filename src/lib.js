@@ -41,6 +41,9 @@ export const statusLabels = {
   rejected: 'Rejected',
   duplicate: 'Duplicate',
 };
+export const isActiveReport = (report) =>
+  !['resolved', 'closed', 'rejected', 'duplicate'].includes(report.status);
+export const isCompletedReport = (report) => ['resolved', 'closed'].includes(report.status);
 export const transitions = {
   submitted: ['validated', 'needs_information', 'rejected', 'duplicate'],
   needs_information: ['validated', 'rejected', 'duplicate'],

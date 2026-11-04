@@ -15,6 +15,7 @@ const env = {
   PYTHONUNBUFFERED: '1',
   GEMINI_API_KEY: 'browser-test-key',
   IIT_VOICE_DEMO_LOGIN: '1',
+  IIT_VOICE_TEST_COMPLETION_BYPASS: '1',
   SUPABASE_URL: 'https://project-ref.supabase.co',
   SUPABASE_PUBLISHABLE_KEY: 'publishable-test-key',
 };
@@ -171,7 +172,7 @@ server.main()`,
       await page.mouse.click(x, y);
     }
     async function logout() {
-      await page.locator('.sidebar [data-logout]').click();
+      await page.locator('.topbar [data-logout]').click();
       await page.getByRole('button', { name: 'Continue with Google', exact: true }).waitFor();
     }
     async function checkNotifications(target) {
@@ -231,6 +232,71 @@ server.main()`,
       path: path.join(root, 'test-results/demo-accounts.png'),
       fullPage: true,
     });
+    // A slow bootstrap is still pending, not a failed sign-in. A real error must
+    // retain its message, and retry must load the workspace without signing in again.
+    let releaseBootstrap;
+    let bootstrapCalls = 0;
+    let signInCalls = 0;
+    const bootstrapReady = new Promise((resolve) => {
+      releaseBootstrap = resolve;
+    });
+    const countSignIn = (request) => {
+      if (request.url().endsWith('/api/demo/login')) signInCalls++;
+    };
+    page.on('request', countSignIn);
+    await page.route('**/api/bootstrap', async (route) => {
+      bootstrapCalls++;
+      if (bootstrapCalls === 1) {
+        await bootstrapReady;
+        return route.continue();
+      }
+      return route.fulfill({
+        status: 503,
+        json: { error: 'Fixture: workspace temporarily unavailable.' },
+      });
+    });
+    await page
+      .locator('.demo-accounts')
+      .getByRole('button', { name: /^Main Admin / })
+      .click();
+    await page.getByRole('status', { name: 'Loading workspace', exact: true }).waitFor();
+    assert.equal(await page.getByText('Loading IIT Voice…', { exact: true }).count(), 0);
+    assert.equal(
+      await page.getByText('Unable to load your campus workspace.', { exact: true }).count(),
+      0
+    );
+    await page.screenshot({ path: path.join(root, 'test-results/workspace-pending.png') });
+    releaseBootstrap();
+    await page.locator('.stats').waitFor();
+    await logout();
+    await page.locator('.demo-accounts').waitFor();
+    await page
+      .locator('.demo-accounts')
+      .getByRole('button', { name: /^Student / })
+      .click();
+    await page
+      .getByRole('alert')
+      .filter({ hasText: 'Fixture: workspace temporarily unavailable.' })
+      .waitFor();
+    let releaseRetry;
+    const retryReady = new Promise((resolve) => {
+      releaseRetry = resolve;
+    });
+    await page.unroute('**/api/bootstrap');
+    await page.route('**/api/bootstrap', async (route) => {
+      await retryReady;
+      await route.continue();
+    });
+    await page.getByRole('button', { name: 'Try again', exact: true }).click();
+    await page.getByRole('status', { name: 'Loading workspace', exact: true }).waitFor();
+    assert.equal(await page.getByRole('alert').count(), 0);
+    releaseRetry();
+    await page.locator('.stats').waitFor();
+    assert.equal(signInCalls, 2, 'Retry must reuse the existing session');
+    page.off('request', countSignIn);
+    await page.unroute('**/api/bootstrap');
+    await logout();
+    await page.locator('.demo-accounts').waitFor();
     for (const [label, role] of [
       ['Main Admin', 'Main Admin'],
       ['Validator Admin', 'Validator Admin'],
@@ -387,7 +453,11 @@ server.main()`,
     await page.locator('.sidebar [data-page=map]').click();
     await page.getByRole('button', { name: 'Report pins', exact: true }).click();
     await page.locator('#campus-map .report-marker').first().waitFor();
+    assert.equal(await page.getByLabel('Status', { exact: true }).inputValue(), 'active');
+    assert.equal(await page.locator('#campus-map .report-marker').count(), 3);
+    await page.getByLabel('Status', { exact: true }).selectOption('');
     assert.equal(await page.locator('#campus-map .report-marker').count(), 4);
+    assert.equal(await page.locator('#campus-map .report-marker-completed').count(), 1);
     await page.getByLabel('Color pins by', { exact: true }).selectOption('category');
     await page.getByLabel('Primary category legend', { exact: true }).waitFor();
     await page.locator('#campus-map .leaflet-image-layer').first().waitFor({ timeout: 20000 });
@@ -404,6 +474,23 @@ server.main()`,
     );
     await page.getByRole('button', { name: 'Report pins', exact: true }).click();
     await page.locator('.leaflet-image-layer').first().waitFor({ timeout: 20000 });
+    assert.equal(await page.locator('.map-pin').count(), 1);
+    await page.getByLabel('Status', { exact: true }).selectOption('completed');
+    assert.equal(await page.locator('#campus-map .report-marker-completed').count(), 1);
+    await page.locator('#campus-map .report-marker-completed').click();
+    await page
+      .locator('.leaflet-popup')
+      .getByText(/awaiting final closure/)
+      .waitFor();
+    await page.locator('.leaflet-popup').getByRole('button', { name: 'View concern →' }).click();
+    await page.locator('#modal .badge.resolved').waitFor();
+    assert.equal(
+      await page.locator('#modal .evidence-card').count(),
+      0,
+      'Campus summaries must not expose restricted evidence'
+    );
+    await page.locator('.dialog-close').click();
+    await page.getByLabel('Status', { exact: true }).selectOption('');
     assert.equal(await page.locator('.map-pin').count(), 2);
     assert.deepEqual((await page.locator('#campus-map .map-pin text').allTextContents()).sort(), [
       'H',
@@ -435,7 +522,7 @@ server.main()`,
     await page.getByText('No pinned concerns match these filters.', { exact: true }).waitFor();
     assert.equal(await page.locator('#campus-map .report-marker').count(), 0);
     await page.getByRole('button', { name: 'Reset map filters', exact: true }).click();
-    assert.equal(await page.locator('#campus-map .report-marker').count(), 2);
+    assert.equal(await page.locator('#campus-map .report-marker').count(), 1);
     await page.getByLabel('Status', { exact: true }).selectOption('in_progress');
     assert.equal(await page.locator('#campus-map .report-marker').count(), 1);
     await page.locator('#campus-map .report-marker').click();
@@ -1091,6 +1178,15 @@ server.main()`,
       .locator('#modal-title')
       .filter({ hasText: 'Browser test: broken library chair' })
       .waitFor();
+    await page.getByRole('region', { name: 'Track your concern' }).waitFor();
+    assert.equal(
+      await page.locator('.tracker-steps [aria-current=step] strong').textContent(),
+      'Validation'
+    );
+    await page.screenshot({ path: path.join(root, 'test-results/reporter-tracker-desktop.png') });
+    await page.getByRole('button', { name: 'Refresh progress', exact: true }).click();
+    await page.locator('#reporter-details > summary').click();
+    await page.locator('#reporter-evidence > summary').click();
     await page.getByText('2nd floor, Room 204, beside the stairs', { exact: false }).waitFor();
     await page.locator('.details-card').getByText('Anonymous reporter', { exact: false }).waitFor();
     await page.locator('.evidence-card').getByText('photo.jpg', { exact: true }).waitFor();
@@ -1187,6 +1283,16 @@ server.main()`,
         .count(),
       0
     );
+    await page.getByRole('tab', { name: 'Overview', exact: true }).focus();
+    await page.keyboard.press('ArrowRight');
+    assert.equal(
+      await page.getByRole('tab', { name: /^Evidence/ }).getAttribute('aria-selected'),
+      'true'
+    );
+    await page.keyboard.press('Home');
+    await page.locator('#concern-panel-overview').waitFor();
+    assert.equal(await page.locator('#concern-panel-location').isVisible(), false);
+    await page.screenshot({ path: path.join(root, 'test-results/staff-concern-desktop.png') });
     assert.equal(await page.locator('#validation-form .priority-choice').count(), 4);
     await page
       .locator('#validation-form')
@@ -1196,6 +1302,7 @@ server.main()`,
       await page.locator('#validation-form .priority-choice.selected input').inputValue(),
       'urgent'
     );
+    await page.getByRole('tab', { name: /^Evidence/ }).click();
     await page
       .locator('.evidence-card')
       .getByText('Damaged classroom chair', { exact: false })
@@ -1206,11 +1313,9 @@ server.main()`,
       .filter({ hasText: 'ICT Demo' })
       .getAttribute('value');
     await page.locator('#validation-form [name=assigned_to]').selectOption(ictAdmin);
-    await page
-      .locator('#validation-form [name=note]')
-      .fill('Location and condition verified. Routed to ICT for action.');
+    assert.equal(await page.locator('#validation-form [name=note]').inputValue(), '');
     const reportId = Number(
-      (await page.locator('#modal .eyebrow').innerText()).match(/IV-(\d+)/)[1]
+      (await page.locator('#modal .concern-header > .eyebrow').innerText()).match(/IV-(\d+)/)[1]
     );
     await page.screenshot({
       path: path.join(root, 'test-results/validator-assignment.png'),
@@ -1218,7 +1323,7 @@ server.main()`,
     });
     await page.getByRole('button', { name: 'Submit validation', exact: true }).click();
     await page.getByRole('heading', { name: 'Validation submitted', exact: true }).waitFor();
-    await page.locator('#modal-content > .badges .badge.urgent').waitFor();
+    await page.locator('#modal-content .badges .badge.urgent').waitFor();
     await page.locator('.dialog-close').click();
     await logout();
     await login('plant@iitvoice.local');
@@ -1265,10 +1370,21 @@ server.main()`,
       .filter({ hasText: 'Browser test: broken library chair' });
     await officeRow.getByRole('button', { name: 'View concern →' }).click();
     await page.locator('#office-progress-form').waitFor();
+    const testCompletion = page.locator('#office-progress-form').getByRole('checkbox');
+    await testCompletion.check();
+    assert.equal(
+      await page.getByRole('button', { name: 'Mark work complete', exact: true }).isEnabled(),
+      true
+    );
+    await testCompletion.uncheck();
+    assert.equal(
+      await page.getByRole('button', { name: 'Mark work complete', exact: true }).isDisabled(),
+      true
+    );
     assert.equal(await page.locator('#review-form, #validation-form').count(), 0);
     await page.locator('#office-progress-form [name=note]').fill('Inspection started by ICT.');
     await page.getByRole('button', { name: 'Start work', exact: true }).click();
-    await page.locator('#modal-content > .badges .badge.in_progress').waitFor();
+    await page.locator('#modal-content .badges .badge.in_progress').waitFor();
     assert.equal(
       await page.getByRole('button', { name: 'Start work', exact: true }).count(),
       0,
@@ -1298,6 +1414,23 @@ server.main()`,
       }, reportId),
       400,
       'Direct API cannot bypass completion evidence'
+    );
+    await page.getByRole('link', { name: 'Add completion evidence', exact: true }).click();
+    await page.locator('#concern-panel-evidence').waitFor();
+    await page.getByRole('tab', { name: 'Activity', exact: true }).click();
+    await page
+      .locator('#comment-form [name=message]')
+      .fill('Unsubmitted note stays while reviewing.');
+    await page.getByRole('tab', { name: /^Evidence/ }).click();
+    await page.getByRole('tab', { name: 'Activity', exact: true }).click();
+    assert.equal(
+      await page.locator('#comment-form [name=message]').inputValue(),
+      'Unsubmitted note stays while reviewing.'
+    );
+    await page.getByRole('tab', { name: /^Evidence/ }).click();
+    assert.equal(
+      await page.locator('#office-progress-form [name=note]').inputValue(),
+      'Work completed and checked by ICT.'
     );
     assert.equal(await page.locator('#evidence-form [name=stage]').inputValue(), 'after');
     await page.locator('#evidence-form [name=image]').setInputFiles(blockedFixture);
@@ -1401,8 +1534,39 @@ server.main()`,
     await page.getByRole('button', { name: 'Save decision', exact: true }).click();
     await page.locator('#modal .badge.closed').waitFor();
     await page.locator('.dialog-close').click();
+    await page.locator('.sidebar [data-page=map]').click();
+    assert.equal(await page.getByLabel('Status', { exact: true }).inputValue(), 'active');
+    assert.equal(await page.locator(`#campus-map [data-report-id="${reportId}"]`).count(), 0);
+    await page.getByLabel('Status', { exact: true }).selectOption('completed');
+    await page
+      .locator(`#campus-map [data-report-id="${reportId}"].report-marker-completed`)
+      .click();
+    await page
+      .locator('.leaflet-popup')
+      .getByText(/Final closure by Main Admin/)
+      .waitFor();
+    await page.locator('.leaflet-popup').getByRole('button', { name: 'View concern →' }).click();
+    await page.locator('#modal .badge.closed').waitFor();
+    assert.equal(
+      await page.locator('#modal .evidence-card').count(),
+      2,
+      'Authorized staff can review before and after photos from a completed pin'
+    );
+    await page.locator('.dialog-close').click();
     await logout();
     await login('student@iitvoice.local');
+    await page.locator(`[data-report="${reportId}"]`).first().click();
+    await page
+      .locator('.tracker-steps [aria-current=step]')
+      .getByText('Closed', { exact: true })
+      .waitFor();
+    assert.equal(await page.locator('.tracker-steps .is-complete').count(), 5);
+    assert.equal(
+      await page.locator('#review-form, #office-progress-form').count(),
+      0,
+      'Reporter tracking must not grant staff controls'
+    );
+    await page.locator('.dialog-close').click();
     await page.locator('[data-new]').click();
     await page.locator('#report-form').waitFor();
     await reportStep(1);
@@ -1416,6 +1580,7 @@ server.main()`,
       .locator('#report-form [name=description]')
       .fill('This harmless blue test image requires manual review.');
     await page.getByRole('button', { name: 'Submit for validation', exact: true }).click();
+    await page.locator('#reporter-evidence > summary').click();
     await page.locator('.evidence-card .photo-screening.needs_review').waitFor();
     assert.equal(await page.locator('.evidence-card img').count(), 0);
     await page.locator('.dialog-close').click();
@@ -1424,6 +1589,7 @@ server.main()`,
     await page.locator('.sidebar [data-page=reports]').click();
     await page.locator('#search').fill('Questionable evidence fixture');
     await page.getByRole('button', { name: 'View concern →' }).click();
+    await page.getByRole('tab', { name: /^Evidence/ }).click();
     await page.locator('.evidence-card .photo-screening.needs_review').waitFor();
     assert.equal(
       await page.locator('.evidence-card img').count(),
@@ -1507,6 +1673,7 @@ server.main()`,
     await page.locator('#report-form [name=location_details]').fill('Room 215');
     await page.locator('#report-form button[type=submit]').click();
     await page.locator('#modal-title').waitFor();
+    await page.locator('#reporter-details > summary').click();
     await page.locator('[aria-label="Reported indoor location"] .leaflet-marker-icon').waitFor();
     const indoorSaved = await page.evaluate(async () => {
       const boot = await (await fetch('/api/bootstrap')).json();
@@ -1519,8 +1686,176 @@ server.main()`,
     await page.locator('.dialog-close').click();
     await page.reload();
     await page.getByRole('button', { name: 'View concern →' }).first().click();
+    await page.locator('#reporter-details > summary').click();
     await page.locator('[aria-label="Reported indoor location"] .leaflet-marker-icon').waitFor();
     await page.locator('.dialog-close').click();
+    await page.setViewportSize({ width: 1360, height: 1000 });
+    await logout();
+    await login('admin@iitvoice.local');
+    await page.evaluate(async (id) => {
+      const me = await (await fetch('/api/me')).json();
+      for (const body of [
+        { status: 'validated', office_id: 2, note: 'Indoor map history test' },
+        { status: 'resolved', note: 'Indoor map completion preview', test_completion_bypass: true },
+        { status: 'closed', note: 'Indoor map closure preview', test_completion_bypass: true },
+      ]) {
+        const response = await fetch(`/api/reports/${id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': me.csrf },
+          body: JSON.stringify(body),
+        });
+        if (!response.ok) throw new Error(await response.text());
+      }
+    }, indoorSaved.id);
+    await page.reload();
+    const buildingPanel = page.locator('.building-summary');
+    await buildingPanel.waitFor();
+    const preview = buildingPanel.locator('.building-map-preview');
+    await buildingPanel.getByLabel('Building', { exact: true }).selectOption('old-cass');
+    await preview.locator('.summary-building-outline').waitFor();
+    await page.waitForFunction(() => {
+      const map = document.querySelector('#summary-building-map').getBoundingClientRect();
+      const building = document.querySelector('.summary-building-outline').getBoundingClientRect();
+      return (
+        building.width > map.width * 0.3 &&
+        building.left >= map.left &&
+        building.right <= map.right &&
+        building.top >= map.top &&
+        building.bottom <= map.bottom
+      );
+    });
+    await preview.screenshot({ path: path.join(root, 'test-results/admin-building-map.png') });
+    await buildingPanel.getByLabel('Building', { exact: true }).selectOption('main-library');
+    assert.equal(
+      await preview.locator('.floor-plan-map').count(),
+      0,
+      'Buildings without plans retain the campus preview'
+    );
+    await preview
+      .locator('.summary-building-outline[aria-label="Main Library Building"]')
+      .waitFor();
+    await buildingPanel.getByLabel('Building', { exact: true }).selectOption('unmapped');
+    assert.equal(
+      await preview.locator('.summary-building-outline').count(),
+      0,
+      'Unknown buildings have no invented outline'
+    );
+    await buildingPanel.getByLabel('Building', { exact: true }).selectOption('old-cass');
+    await buildingPanel.getByLabel('Floor', { exact: true }).selectOption('second');
+    const floorPin = preview.locator(`.report-marker[data-report-id="${indoorSaved.id}"]`);
+    await floorPin.waitFor();
+    assert.equal(await preview.locator('.report-marker').count(), 1);
+    assert.equal(await floorPin.getAttribute('data-status'), 'closed');
+    assert.match(await preview.locator('.floor-plan-image').getAttribute('src'), /cass-second/);
+    await floorPin.click();
+    await preview.getByRole('button', { name: 'View concern →', exact: true }).click();
+    await page.locator('#modal .badge.closed').waitFor();
+    await page.locator('.dialog-close').click();
+    assert.equal(await page.locator('.analytics-stats .stat strong').first().innerText(), '1');
+    assert.equal(await page.locator('.analytics-stats .stat strong').nth(2).innerText(), '1');
+    const summaryDownload = page.waitForEvent('download');
+    await buildingPanel.getByRole('button', { name: 'Download summary CSV', exact: true }).click();
+    const summaryFile = await summaryDownload;
+    assert.match(summaryFile.suggestedFilename(), /building-floor-summary.*\.csv$/);
+    const summaryCsv = fs.readFileSync(await summaryFile.path(), 'utf8');
+    assert.match(summaryCsv, /"Old CASS Building","Second floor",1,0,1,0,0/);
+    assert.doesNotMatch(summaryCsv, /"Ground floor",[1-9]/);
+    const rowsDownload = page.waitForEvent('download');
+    await buildingPanel
+      .getByRole('button', { name: 'Download report rows CSV', exact: true })
+      .click();
+    const rowsCsv = fs.readFileSync(await (await rowsDownload).path(), 'utf8');
+    assert.match(rowsCsv, /Old CASS indoor test concern/);
+    assert.doesNotMatch(rowsCsv, /Browser test: broken library chair/);
+    await buildingPanel.getByLabel('Floor', { exact: true }).selectOption('third');
+    assert.equal(
+      await preview.locator('.report-marker').count(),
+      0,
+      'An empty floor must not retain pins from another floor'
+    );
+    assert.match(await preview.locator('.floor-plan-image').getAttribute('src'), /cass-third/);
+    assert.equal(await page.locator('.analytics-stats .stat strong').first().innerText(), '0');
+    assert.equal(
+      await buildingPanel
+        .getByRole('button', { name: 'Download summary CSV', exact: true })
+        .isDisabled(),
+      true
+    );
+    await buildingPanel
+      .getByRole('group', { name: 'Floor report counts', exact: true })
+      .getByRole('button')
+      .filter({ hasText: 'Second floor' })
+      .click();
+    assert.equal(await buildingPanel.getByLabel('Floor', { exact: true }).inputValue(), 'second');
+    await buildingPanel.screenshot({
+      path: path.join(root, 'test-results/admin-building-floor-summary.png'),
+    });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await buildingPanel.scrollIntoViewIfNeeded();
+    await page.waitForFunction(() => {
+      const map = document
+        .querySelector('.building-map-preview .floor-plan-map')
+        .getBoundingClientRect();
+      const image = document
+        .querySelector('.building-map-preview .floor-plan-image')
+        .getBoundingClientRect();
+      // Second-floor source margins are clipped; all visible plan content must stay framed.
+      return (
+        image.left + image.width * 0.02 >= map.left - 1 &&
+        image.right - image.width * 0.02 <= map.right + 1 &&
+        image.top + image.height * 0.045 >= map.top - 1 &&
+        image.bottom - image.height * 0.07 <= map.bottom + 1 &&
+        map.height <= 320
+      );
+    });
+    assert.equal(
+      await page.evaluate(() => document.documentElement.scrollWidth > innerWidth),
+      false,
+      'Building analytics must fit a phone'
+    );
+    await buildingPanel.screenshot({
+      path: path.join(root, 'test-results/admin-building-floor-mobile.png'),
+    });
+    await page.setViewportSize({ width: 1360, height: 1000 });
+    await buildingPanel
+      .getByRole('button', { name: 'Clear building & floor', exact: true })
+      .click();
+    assert.equal(await buildingPanel.getByLabel('Building', { exact: true }).inputValue(), '');
+    await page.locator('.sidebar [data-page=reports]').click();
+    await page.locator('#search').fill('Old CASS indoor test concern');
+    await page.getByRole('button', { name: 'View concern →' }).click();
+    await page.getByRole('tab', { name: 'Location', exact: true }).click();
+    await page.locator('.floor-plan-map .report-marker-completed').waitFor();
+    await page.locator('#modal .badge.closed').waitFor();
+    await page
+      .locator('.floor-plan-panel')
+      .screenshot({ path: path.join(root, 'test-results/completed-indoor-pin.png') });
+    const closedIndoor = await page.evaluate(
+      async (id) => (await (await fetch(`/api/reports/${id}`)).json()).indoor_location,
+      indoorSaved.id
+    );
+    assert.deepEqual(
+      closedIndoor,
+      indoorSaved.indoor_location,
+      'Closure retains the exact building, floor and indoor coordinates'
+    );
+    await page.locator('#review-form [name=status]').selectOption('in_progress');
+    await page.locator('#review-form [name=note]').fill('Reopened to verify the active indoor pin');
+    await page.getByRole('button', { name: 'Save decision', exact: true }).click();
+    await page.locator('#modal .badge.in_progress').waitFor();
+    assert.equal(await page.locator('.floor-plan-map .report-marker-completed').count(), 0);
+    const reopenedIndoor = await page.evaluate(
+      async (id) => (await (await fetch(`/api/reports/${id}`)).json()).indoor_location,
+      indoorSaved.id
+    );
+    assert.deepEqual(
+      reopenedIndoor,
+      indoorSaved.indoor_location,
+      'Reopening also preserves the indoor point'
+    );
+    await page.locator('.dialog-close').click();
+    await logout();
+    await login('student@iitvoice.local');
     // Exercise the shared responsive layout with touch input and every staff workflow.
     const mobile = await browser.newPage({
       viewport: { width: 390, height: 844 },
@@ -1889,6 +2224,8 @@ server.main()`,
         await mobile.getByRole('button', { name: 'View concern →' }).first().tap();
         await mobile.locator('#modal-title').waitFor();
         await fits(role + ' mobile concern');
+        if (role !== 'Validator Admin')
+          await mobile.getByRole('tab', { name: 'Activity', exact: true }).tap();
         const form = mobile.locator(
           role === 'Validator Admin' ? '#validation-form' : '#comment-form'
         );
@@ -1944,6 +2281,18 @@ server.main()`,
       .locator('#report-form [name=description]')
       .fill('The walkway surface is uneven near the entrance.');
     await guest.getByRole('button', { name: 'Submit for validation', exact: true }).click();
+    await guest.getByRole('region', { name: 'Track your concern' }).waitFor();
+    assert.equal(
+      await guest.evaluate(() => document.documentElement.scrollWidth > innerWidth),
+      false
+    );
+    assert.equal(
+      await guest.locator('#modal').evaluate((el) => el.scrollWidth > el.clientWidth + 1),
+      false,
+      'Phone tracker must fit the dialog'
+    );
+    await guest.screenshot({ path: path.join(root, 'test-results/reporter-tracker-mobile.png') });
+    await guest.locator('#reporter-details > summary').click();
     await guest
       .locator('.details-card')
       .getByText('Anonymous reporter · Visitor', { exact: false })

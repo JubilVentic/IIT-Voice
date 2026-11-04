@@ -41,11 +41,16 @@ function buildingHoverImage(building, id) {
     </g>`;
   return svg;
 }
-export function pinIcon({ color = '#7a203c', symbol = '', editable = false } = {}) {
+export function pinIcon({
+  color = '#7a203c',
+  symbol = '',
+  editable = false,
+  completed = false,
+} = {}) {
   const touchTarget = window.matchMedia('(pointer: coarse)').matches;
   return L.divIcon({
-    className: `report-marker${editable ? ' report-marker-editable' : ''}${touchTarget ? ' touch-pin' : ''}`,
-    html: `<svg class="map-pin" viewBox="0 0 32 44" aria-hidden="true"><path fill="${color}" stroke="white" stroke-width="2.5" d="M16 1.5C8 1.5 1.5 8 1.5 16c0 10 14.5 25.5 14.5 25.5S30.5 26 30.5 16C30.5 8 24 1.5 16 1.5Z"/>${symbol ? `<text x="16" y="20" text-anchor="middle" fill="white" font-size="13" font-weight="700" font-family="sans-serif">${symbol}</text>` : '<circle cx="16" cy="16" r="5" fill="white"/>'}</svg>`,
+    className: `report-marker${editable ? ' report-marker-editable' : ''}${completed ? ' report-marker-completed' : ''}${touchTarget ? ' touch-pin' : ''}`,
+    html: `<svg class="map-pin" viewBox="0 0 32 44" aria-hidden="true"><path fill="${color}" stroke="white" stroke-width="2.5" d="M16 1.5C8 1.5 1.5 8 1.5 16c0 10 14.5 25.5 14.5 25.5S30.5 26 30.5 16C30.5 8 24 1.5 16 1.5Z"/>${symbol ? `<text x="16" y="20" text-anchor="middle" fill="white" font-size="13" font-weight="700" font-family="sans-serif">${symbol}</text>` : '<circle cx="16" cy="16" r="5" fill="white"/>'}${completed ? '<circle cx="28" cy="5" r="8" fill="#8b6914" stroke="white" stroke-width="2"/><path d="m24 5 3 3 5-6" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>' : ''}</svg>`,
     iconSize: touchTarget ? [48, 56] : [32, 44],
     iconAnchor: touchTarget ? [24, 50] : [16, 42],
     popupAnchor: [0, -38],
@@ -54,6 +59,7 @@ export function pinIcon({ color = '#7a203c', symbol = '', editable = false } = {
 
 export function ReportMap({
   reports = emptyReports,
+  mapId,
   large = false,
   pick = false,
   pin = null,
@@ -65,6 +71,7 @@ export function ReportMap({
   mapOverlay,
   hidePickControls = false,
   fitCampusOnResize = false,
+  focusBuilding = null,
 }) {
   const { openReport, toast } = useVoice();
   const container = useRef(null),
@@ -76,8 +83,16 @@ export function ReportMap({
   const [locationPhase, setLocationPhase] = useState('');
   const locationRequest = useRef(0);
   const fittedReports = useRef(reports);
-  const callbacks = useRef({ openReport, toast, onPick, pin, onBuildingPick, fitCampusOnResize });
-  callbacks.current = { openReport, toast, onPick, pin, onBuildingPick, fitCampusOnResize };
+  const callbacks = useRef(null);
+  callbacks.current = {
+    openReport,
+    toast,
+    onPick,
+    pin,
+    onBuildingPick,
+    fitCampusOnResize,
+    focusBuilding,
+  };
   async function useCurrentLocation() {
     if (!navigator.geolocation) {
       setLocationError('This browser does not support current location. Select a pin on the map.');
@@ -200,9 +215,14 @@ export function ReportMap({
       if (
         !fitted ||
         callbacks.current.fitCampusOnResize ||
-        (resized && window.matchMedia('(max-width: 760px)').matches)
+        (resized &&
+          (callbacks.current.focusBuilding || window.matchMedia('(max-width: 760px)').matches))
       ) {
-        map.fitBounds(campusBounds, { padding: [16, 16], animate: false });
+        map.fitBounds(callbacks.current.focusBuilding?.outline || campusBounds, {
+          padding: callbacks.current.focusBuilding ? [24, 24] : [16, 16],
+          maxZoom: 2.5,
+          animate: false,
+        });
         fitted = true;
       }
       previousSize = { width, height };
@@ -224,6 +244,19 @@ export function ReportMap({
       mapRef.current.fitBounds(campusBounds, { padding: [16, 16], animate: false });
     }
   }, [fitCampusOnResize]);
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || pick || !focusBuilding) return;
+    const outline = L.polygon(focusBuilding.outline, {
+      color: '#7a203c',
+      weight: 2,
+      fillOpacity: 0.06,
+      interactive: false,
+      className: 'summary-building-outline',
+    }).addTo(map);
+    outline.getElement()?.setAttribute('aria-label', focusBuilding.name);
+    return () => outline.remove();
+  }, [focusBuilding, pick]);
   const selectableBuildings = pick && Boolean(onBuildingPick);
   useEffect(() => {
     if (!selectableBuildings || !mapRef.current) return;
@@ -333,6 +366,9 @@ export function ReportMap({
         title.textContent = r.title;
         const status = document.createElement('span');
         status.textContent = statusLabels[r.status];
+        if (r.status === 'resolved')
+          status.textContent += ' · Work marked complete; awaiting final closure';
+        if (r.status === 'closed') status.textContent += ' · Final closure by Main Admin';
         const priority = document.createElement('p');
         priority.textContent = `Priority: ${priorities[r.priority]?.label || r.priority}`;
         const categories = document.createElement('p');
@@ -354,6 +390,7 @@ export function ReportMap({
         marker.getElement().setAttribute('aria-label', label);
         marker.getElement().dataset.reportId = r.id;
         marker.getElement().dataset.priority = r.priority;
+        marker.getElement().dataset.status = r.status;
       });
     return () => {
       markers.remove();
@@ -361,11 +398,19 @@ export function ReportMap({
   }, [reports, pick, colorBy, density]);
   useEffect(() => {
     if (pick || !mapRef.current) return;
+    if (focusBuilding) {
+      mapRef.current.fitBounds(focusBuilding.outline, {
+        padding: [24, 24],
+        maxZoom: 2.5,
+        animate: false,
+      });
+      return;
+    }
     if (fittedReports.current === reports) return;
     fittedReports.current = reports;
     const points = reports.filter((r) => hasMapPin(r) && isOnPlan(r)).map(planPosition);
     if (points.length) mapRef.current.fitBounds(points, { padding: [60, 60], maxZoom: 0.5 });
-  }, [reports, pick]);
+  }, [reports, pick, focusBuilding]);
   useEffect(() => {
     if (!pick || !mapRef.current) return;
     const map = mapRef.current;
@@ -442,7 +487,7 @@ export function ReportMap({
       <div className={mapFrameClassName || undefined}>
         <div
           ref={container}
-          id={pick ? 'pick-map' : 'campus-map'}
+          id={mapId || (pick ? 'pick-map' : 'campus-map')}
           className={`map ${large ? 'large' : ''} ${pick ? 'pick' : ''}`}
           aria-label={
             pick
@@ -474,7 +519,7 @@ export function CampusMap({ reports, large = false }) {
   const [colorBy, setColorBy] = useState('priority'),
     [category, setCategory] = useState(''),
     [priority, setPriority] = useState(''),
-    [status, setStatus] = useState('');
+    [status, setStatus] = useState('active');
   const visible = useMemo(
     () => filterMapReports(reports, { category, priority, status }),
     [reports, category, priority, status]
@@ -559,6 +604,8 @@ export function CampusMap({ reports, large = false }) {
                 onChange={(e) => setStatus(e.target.value)}
               >
                 <option value="">All statuses</option>
+                <option value="active">Active concerns</option>
+                <option value="completed">Completed · Resolved or closed</option>
                 {Object.entries(statusLabels).map(([value, label]) => (
                   <option key={value} value={value}>
                     {label}
@@ -571,14 +618,14 @@ export function CampusMap({ reports, large = false }) {
             <p className="map-caption" role="status">
               {visible.length} of {reports.filter(hasMapPin).length} pinned concerns
             </p>
-            {(category || priority || status) && (
+            {(category || priority || status !== 'active') && (
               <button
                 type="button"
                 className="btn link"
                 onClick={() => {
                   setCategory('');
                   setPriority('');
-                  setStatus('');
+                  setStatus('active');
                 }}
               >
                 Reset map filters
@@ -614,9 +661,17 @@ export function CampusMap({ reports, large = false }) {
               {item.label}
             </span>
           ))}
+          <span>
+            <span className="legend-symbol completion-symbol" aria-hidden="true">
+              ✓
+            </span>
+            Work marked complete · Resolved or closed
+          </span>
         </div>
       )}
       <p className="map-caption">
+        {view === 'reports' &&
+          'Active concerns are shown by default. Use Status to view completed reports. '}
         {view === 'plan'
           ? 'Explore the MSU–IIT campus plan. Select Report pins to view IIT Voice concerns.'
           : colorBy === 'category'

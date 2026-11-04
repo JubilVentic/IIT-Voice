@@ -13,12 +13,14 @@ import {
   useVoice,
   validateImage,
 } from '../lib.js';
-import { Badge, ErrorMessage, Field, ReportList } from '../components/UI.jsx';
+import { Badge, ErrorMessage, Field, ReportList, Icon } from '../components/UI.jsx';
 import { FloorPlan, ReportLocationPicker } from '../components/FloorPlans.jsx';
 import { hasIndoorPoint, indoorLabel } from '../indoor-location.js';
 import { pinnedLocation } from '../campus-location.js';
 import { CategoryFields } from '../components/Categories.jsx';
 import { PhotoAssist, CompletionCheck } from '../components/PhotoAssist.jsx';
+import { ReportTracker } from '../components/ReportTracker.jsx';
+import { ReportMap } from '../components/Maps.jsx';
 
 export function NewReport() {
   const { user, data, api, refresh, toast, openReport, closeModal } = useVoice();
@@ -418,7 +420,7 @@ function PriorityAssessment({ priority, onChange }) {
     <fieldset className="priority-assessment">
       <legend>Priority assessment</legend>
       <p className="meta">
-        Choose based on impact and urgency. Explain your assessment in the decision note.
+        Choose based on impact and urgency. You can explain your assessment in the decision note.
       </p>
       <div className="priority-options">
         {Object.entries(priorities).map(([value, option]) => (
@@ -442,7 +444,21 @@ function PriorityAssessment({ priority, onChange }) {
   );
 }
 
-function ReviewForm({ report, onSaved }) {
+function CompletionTestOption({ checked, onChange }) {
+  const { data } = useVoice();
+  if (!data.completion_test_enabled) return null;
+  return (
+    <label className="notice check">
+      <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} />
+      <span>
+        <strong>Local test only: skip the after-work photo for this action.</strong> This will be
+        recorded in report activity. No completion photo is created.
+      </span>
+    </label>
+  );
+}
+
+function ReviewForm({ report, onSaved, onEvidence }) {
   const { data, api, toast } = useVoice(),
     action = useAction();
   const [priority, setPriority] = useState(report.priority);
@@ -452,6 +468,7 @@ function ReviewForm({ report, onSaved }) {
     report.office_id || data.routing.find((x) => x.category === category)?.office_id || '';
   const [officeId, setOfficeId] = useState(officeDefault);
   const [status, setStatus] = useState(report.status);
+  const [testBypass, setTestBypass] = useState(false);
   const needsPhoto =
     ['resolved', 'closed'].includes(status) &&
     (!report.has_completion_evidence || Number(officeId) !== report.office_id);
@@ -460,6 +477,7 @@ function ReviewForm({ report, onSaved }) {
     const body = formValues(e.currentTarget);
     body.category = category;
     body.categories = categories;
+    if (testBypass && needsPhoto) body.test_completion_bypass = true;
     for (const key of ['office_id', 'assigned_to', 'duplicate_of'])
       body[key] = body[key] ? Number(body[key]) : null;
     action.run(async () => {
@@ -558,10 +576,18 @@ function ReviewForm({ report, onSaved }) {
         {needsPhoto && (
           <p className="notice" role="status">
             Upload an after-work photo for the current assignment before resolving or closing this
-            concern. <a href="#evidence-form">Add completion evidence</a>
+            concern.{' '}
+            <a href="#evidence-form" onClick={onEvidence}>
+              Add completion evidence
+            </a>
           </p>
         )}
-        <button className="btn solid" type="submit" disabled={action.busy || needsPhoto}>
+        {needsPhoto && <CompletionTestOption checked={testBypass} onChange={setTestBypass} />}
+        <button
+          className="btn solid"
+          type="submit"
+          disabled={action.busy || (needsPhoto && !testBypass)}
+        >
           Save decision
         </button>
       </form>
@@ -658,10 +684,10 @@ function ValidationForm({ report, onSaved }) {
           </>
         )}
         <Field
-          label="Validation note"
-          help="Explain your decision. The reporter can read this note."
+          label="Validation note (optional)"
+          help="Add context if needed. The reporter can read this note."
         >
-          <textarea name="note" required minLength={2} maxLength={2000} />
+          <textarea name="note" maxLength={2000} />
         </Field>
         <ErrorMessage>{action.error}</ErrorMessage>
         <button className="btn solid" disabled={action.busy}>
@@ -672,9 +698,10 @@ function ValidationForm({ report, onSaved }) {
   );
 }
 
-function OfficeProgressForm({ report, onSaved }) {
+function OfficeProgressForm({ report, onSaved, onEvidence }) {
   const { api, toast } = useVoice(),
     action = useAction();
+  const [testBypass, setTestBypass] = useState(false);
   function submit(e) {
     e.preventDefault();
     const values = formValues(e.currentTarget),
@@ -683,7 +710,13 @@ function OfficeProgressForm({ report, onSaved }) {
     action.run(async () => {
       await api(`/api/reports/${report.id}`, {
         method: 'PATCH',
-        body: { status, note: values.note },
+        body: {
+          status,
+          note: values.note,
+          ...(testBypass && status === 'resolved' && !report.has_completion_evidence
+            ? { test_completion_bypass: true }
+            : {}),
+        },
       });
       await onSaved();
       toast(
@@ -709,8 +742,14 @@ function OfficeProgressForm({ report, onSaved }) {
         {!report.has_completion_evidence && (
           <p className="notice" role="status">
             Choose a fresh after-work photo, then click Upload evidence before marking work
-            complete. <a href="#evidence-form">Add completion evidence</a>
+            complete.{' '}
+            <a href="#evidence-form" onClick={onEvidence}>
+              Add completion evidence
+            </a>
           </p>
+        )}
+        {!report.has_completion_evidence && (
+          <CompletionTestOption checked={testBypass} onChange={setTestBypass} />
         )}
         <ErrorMessage>{action.error}</ErrorMessage>
         <div className="actions">
@@ -730,7 +769,7 @@ function OfficeProgressForm({ report, onSaved }) {
             name="status"
             value="resolved"
             className="btn solid"
-            disabled={action.busy || !report.has_completion_evidence}
+            disabled={action.busy || (!report.has_completion_evidence && !testBypass)}
           >
             Mark work complete
           </button>
@@ -1018,6 +1057,7 @@ function EvidenceCard({ attachment: a, reportId, onSaved, canCheck }) {
 
 export function ReportDetails({ id }) {
   const { user, api, refresh } = useVoice();
+  const [detailTab, setDetailTab] = useState('overview');
   const [report, setReport] = useState(null),
     [error, setError] = useState('');
   useEffect(() => {
@@ -1050,109 +1090,299 @@ export function ReportDetails({ id }) {
     admin = user.role !== 'student';
   const pending = ['submitted', 'needs_information'].includes(r.status);
   const canUpdate = user.role === 'admin';
+  const reporter = !admin && r.is_mine;
+  const indoor = r.indoor_location && (
+    <section className="panel" aria-label="Reported indoor location">
+      <h3>Indoor location</h3>
+      <FloorPlan location={r.indoor_location} report={r} />
+    </section>
+  );
+  function openEvidence(e) {
+    e.preventDefault();
+    setDetailTab('evidence');
+    requestAnimationFrame(() => {
+      document.getElementById('evidence-form')?.scrollIntoView({ block: 'start' });
+    });
+  }
+  const actions = canUpdate ? (
+    <ReviewForm
+      key={`${r.id}-${r.status}-${r.updated_at}`}
+      report={r}
+      onSaved={onSaved}
+      onEvidence={openEvidence}
+    />
+  ) : user.role === 'validator' && pending ? (
+    <ValidationForm report={r} onSaved={onSaved} />
+  ) : user.role === 'office' && ['validated', 'in_progress'].includes(r.status) ? (
+    <OfficeProgressForm report={r} onSaved={onSaved} onEvidence={openEvidence} />
+  ) : admin ? (
+    <section className="panel">
+      <h3>
+        {user.role === 'validator'
+          ? 'Validation submitted'
+          : r.has_completion_evidence
+            ? 'Work completed'
+            : 'Completion photo required'}
+      </h3>
+      <p className="meta">
+        {user.role === 'validator'
+          ? 'The responsible office handles work progress. Main Admin oversees closure.'
+          : r.has_completion_evidence
+            ? 'Main Admin handles final closure and reopening.'
+            : 'Upload an after-work photo so Main Admin can verify completion.'}
+      </p>
+      {user.role === 'office' && !r.has_completion_evidence && (
+        <a href="#evidence-form" onClick={openEvidence}>
+          Add completion evidence
+        </a>
+      )}
+    </section>
+  ) : null;
+  const facts = (
+    <>
+      <p className="report-description">{r.description}</p>
+      <div className="details-card">
+        <p>
+          <strong>Categories:</strong> {reportCategories(r).join(' · ')}
+          <small>Primary: {r.category}</small>
+        </p>
+        <p>
+          <strong>Location:</strong> {r.location}
+        </p>
+        {r.location_details && (
+          <p className="report-description">
+            <strong>Location details:</strong> {r.location_details}
+          </p>
+        )}
+        <p>
+          <strong>Office:</strong> {r.office || 'Awaiting assignment'}
+        </p>
+        <p>
+          <strong>Submitted:</strong> {date(r.created_at)}
+        </p>
+        {r.reporter && (
+          <p>
+            <strong>Assigned admin:</strong> {r.assigned_admin?.name || 'Not assigned'}
+          </p>
+        )}
+        {r.reporter && (
+          <p>
+            <strong>Reporter:</strong> {r.reporter.name} · {r.reporter.affiliation}
+          </p>
+        )}
+        {r.duplicate_of && <p>Linked to report #{r.duplicate_of}</p>}
+      </div>
+    </>
+  );
+  const activity = (
+    <>
+      <h3 className="full">Report activity</h3>
+      <div className="timeline">
+        {r.events.length ? (
+          r.events.map((e) => (
+            <div className="event" key={e.id}>
+              {e.message}
+              {e.internal ? (
+                <>
+                  {' '}
+                  <Badge>Internal</Badge>
+                </>
+              ) : null}
+              <small>
+                {e.actor} · {date(e.created_at)}
+              </small>
+            </div>
+          ))
+        ) : (
+          <p className="muted">No updates yet.</p>
+        )}
+      </div>
+    </>
+  );
+
   return (
     <>
-      <div className="eyebrow">CONCERN · IV-{String(r.id).padStart(4, '0')}</div>
-      <h2 id="modal-title">{r.title}</h2>
-      <div className="badges">
-        <Badge value={r.status} />
-        <Badge value={r.priority} />
-        <Badge>{r.visibility === 'campus' ? 'Campus summary' : 'Restricted'}</Badge>
-      </div>
-      {r.indoor_location && (
-        <section className="panel" aria-label="Reported indoor location">
-          <h3>Indoor location</h3>
-          <FloorPlan location={r.indoor_location} />
+      <header className={admin ? 'concern-header' : undefined}>
+        <div className="eyebrow">CONCERN · IV-{String(r.id).padStart(4, '0')}</div>
+        <h2 id="modal-title">{r.title}</h2>
+        <div className="badges">
+          <Badge value={r.status} />
+          <Badge value={r.priority} />
+          <Badge>{r.visibility === 'campus' ? 'Campus summary' : 'Restricted'}</Badge>
+        </div>
+        {admin && (
+          <div className="concern-context">
+            <span>
+              <Icon name="map" />
+              {r.location}
+            </span>
+            <span>
+              <Icon name="history" />
+              Submitted {date(r.created_at)}
+            </span>
+            <span>
+              <Icon name="users" />
+              {r.office || 'Awaiting office assignment'}
+            </span>
+          </div>
+        )}
+      </header>
+      {reporter ? (
+        <div className="reporter-detail">
+          <ReportTracker report={r} onRefresh={onSaved} />
+          <section className="reporter-updates" aria-label="Updates from the review team">
+            {activity}
+            <CommentForm report={r} admin={false} onSaved={onSaved} />
+          </section>
+          <details className="reporter-section" id="reporter-details">
+            <summary>
+              Report details & location <span>What you reported and where</span>
+            </summary>
+            {facts}
+            {indoor}
+          </details>
+          <details className="reporter-section" id="reporter-evidence">
+            <summary>
+              Photos & supporting evidence <span>Before / after photos and additional uploads</span>
+            </summary>
+            <EvidenceComparison report={r} onSaved={onSaved} />
+            <EvidenceForm key={`${r.id}-${r.status}`} report={r} onSaved={onSaved} />
+          </details>
+        </div>
+      ) : admin ? (
+        <div className="staff-review-layout">
+          <div className="staff-review-content">
+            <div className="staff-detail-tabs" role="tablist" aria-label="Concern sections">
+              {[
+                ['overview', 'Overview', 'report'],
+                ['evidence', 'Evidence', 'lock'],
+                ['location', 'Location', 'map'],
+                ['activity', 'Activity', 'history'],
+              ].map(([value, label, icon], index, tabs) => (
+                <button
+                  key={value}
+                  type="button"
+                  role="tab"
+                  id={`concern-tab-${value}`}
+                  aria-controls={`concern-panel-${value}`}
+                  aria-selected={detailTab === value}
+                  tabIndex={detailTab === value ? 0 : -1}
+                  onClick={() => setDetailTab(value)}
+                  onKeyDown={(e) => {
+                    const next =
+                      e.key === 'ArrowRight'
+                        ? (index + 1) % tabs.length
+                        : e.key === 'ArrowLeft'
+                          ? (index + tabs.length - 1) % tabs.length
+                          : e.key === 'Home'
+                            ? 0
+                            : e.key === 'End'
+                              ? tabs.length - 1
+                              : null;
+                    if (next === null) return;
+                    e.preventDefault();
+                    setDetailTab(tabs[next][0]);
+                    document.getElementById(`concern-tab-${tabs[next][0]}`)?.focus();
+                  }}
+                >
+                  <Icon name={icon} />
+                  {label}
+                  {value === 'evidence' && (
+                    <span className="section-count">{r.attachments.length}</span>
+                  )}
+                </button>
+              ))}
+            </div>
+            <section
+              className="case-section case-overview"
+              role="tabpanel"
+              id="concern-panel-overview"
+              aria-labelledby="concern-tab-overview"
+              hidden={detailTab !== 'overview'}
+              tabIndex={0}
+            >
+              <div className="case-section-heading">
+                <span className="eyebrow">THE CONCERN</span>
+                <h3>What was reported</h3>
+              </div>
+              {facts}
+              <button type="button" className="btn" onClick={() => setDetailTab('evidence')}>
+                Review evidence <span aria-hidden="true">→</span>
+              </button>
+            </section>
+            <section
+              className="case-section"
+              role="tabpanel"
+              id="concern-panel-evidence"
+              aria-labelledby="concern-tab-evidence"
+              hidden={detailTab !== 'evidence'}
+              tabIndex={0}
+            >
+              <div className="case-section-heading">
+                <span className="eyebrow">SUPPORTING PHOTOS</span>
+                <h3>Evidence review</h3>
+                <p>
+                  Compare the reported condition with completed work. Photos remain restricted to
+                  authorized people.
+                </p>
+              </div>
+              {r.reporter && <EvidenceComparison report={r} onSaved={onSaved} />}
+              {user.role !== 'validator' && (
+                <EvidenceForm key={`${r.id}-${r.status}`} report={r} onSaved={onSaved} />
+              )}
+            </section>
+            <section
+              className="case-section"
+              role="tabpanel"
+              id="concern-panel-location"
+              aria-labelledby="concern-tab-location"
+              hidden={detailTab !== 'location'}
+              tabIndex={0}
+            >
+              <div className="case-section-heading">
+                <span className="eyebrow">REPORTED LOCATION</span>
+                <h3>{r.location}</h3>
+                {r.location_details && <p>{r.location_details}</p>}
+              </div>
+              {indoor ||
+                (Number.isFinite(r.latitude) && Number.isFinite(r.longitude) ? (
+                  <ReportMap reports={[r]} mapId="concern-location-map" />
+                ) : (
+                  <p className="notice">No map pin was provided. Use the written location above.</p>
+                ))}
+            </section>
+            <section
+              className="case-section"
+              role="tabpanel"
+              id="concern-panel-activity"
+              aria-labelledby="concern-tab-activity"
+              hidden={detailTab !== 'activity'}
+              tabIndex={0}
+            >
+              {activity}
+              {user.role !== 'validator' && (
+                <CommentForm report={r} admin={admin} onSaved={onSaved} />
+              )}
+            </section>
+          </div>
+          <aside className="staff-review-actions" aria-label="Concern actions">
+            <p className="case-action-label">
+              {user.role === 'validator'
+                ? 'VALIDATION DESK'
+                : user.role === 'office'
+                  ? 'OFFICE WORKSPACE'
+                  : 'ADMIN CONTROLS'}
+            </p>
+            {actions}
+          </aside>
+        </div>
+      ) : (
+        <section className="campus-concern-detail">
+          {indoor}
+          {facts}
+          {activity}
         </section>
       )}
-      <div className="columns">
-        <section>
-          <p className="report-description">{r.description}</p>
-          <div className="details-card">
-            <p>
-              <strong>Categories:</strong> {reportCategories(r).join(' · ')}
-              <small>Primary: {r.category}</small>
-            </p>
-            <p>
-              <strong>Location:</strong> {r.location}
-            </p>
-            {r.location_details && (
-              <p className="report-description">
-                <strong>Location details:</strong> {r.location_details}
-              </p>
-            )}
-            <p>
-              <strong>Office:</strong> {r.office || 'Awaiting assignment'}
-            </p>
-            <p>
-              <strong>Submitted:</strong> {date(r.created_at)}
-            </p>
-            {r.reporter && (
-              <p>
-                <strong>Assigned admin:</strong> {r.assigned_admin?.name || 'Not assigned'}
-              </p>
-            )}
-            {r.reporter && (
-              <p>
-                <strong>Reporter:</strong> {r.reporter.name} · {r.reporter.affiliation}
-              </p>
-            )}
-            {r.duplicate_of && <p>Linked to report #{r.duplicate_of}</p>}
-          </div>
-          {r.reporter && <EvidenceComparison report={r} onSaved={onSaved} />}
-          <h3 className="full">Report activity</h3>
-          <div className="timeline">
-            {r.events.length ? (
-              r.events.map((e) => (
-                <div className="event" key={e.id}>
-                  {e.message}
-                  {e.internal ? (
-                    <>
-                      {' '}
-                      <Badge>Internal</Badge>
-                    </>
-                  ) : null}
-                  <small>
-                    {e.actor} · {date(e.created_at)}
-                  </small>
-                </div>
-              ))
-            ) : (
-              <p className="muted">No updates yet.</p>
-            )}
-          </div>
-          {user.role !== 'validator' && (r.is_mine || admin) && (
-            <>
-              <CommentForm report={r} admin={admin} onSaved={onSaved} />
-              <EvidenceForm key={`${r.id}-${r.status}`} report={r} onSaved={onSaved} />
-            </>
-          )}
-        </section>
-        {canUpdate ? (
-          <ReviewForm key={`${r.id}-${r.status}-${r.updated_at}`} report={r} onSaved={onSaved} />
-        ) : user.role === 'validator' && pending ? (
-          <ValidationForm report={r} onSaved={onSaved} />
-        ) : user.role === 'office' && ['validated', 'in_progress'].includes(r.status) ? (
-          <OfficeProgressForm report={r} onSaved={onSaved} />
-        ) : admin ? (
-          <section className="panel">
-            <h3>
-              {user.role === 'validator'
-                ? 'Validation submitted'
-                : r.has_completion_evidence
-                  ? 'Work completed'
-                  : 'Completion photo required'}
-            </h3>
-            <p className="meta">
-              {user.role === 'validator'
-                ? 'The responsible office handles work progress. Main Admin oversees closure.'
-                : r.has_completion_evidence
-                  ? 'Main Admin handles final closure and reopening.'
-                  : 'Upload an after-work photo below so Main Admin can verify completion.'}
-            </p>
-          </section>
-        ) : null}
-      </div>
     </>
   );
 }

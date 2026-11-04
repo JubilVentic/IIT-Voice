@@ -90,6 +90,26 @@ class Client:
 
 
 class SchemaMigrationTests(unittest.TestCase):
+    def test_completion_bypass_cannot_run_on_cloud_or_online_demos(self):
+        handler = server.Handler.__new__(server.Handler)
+        handler._online_demo = False
+        handler.demo_enabled = lambda: True
+        with (
+            patch.object(server, "DEMO_LOGIN", True),
+            patch.object(server, "DATABASE_URL", ""),
+            patch.dict(os.environ, {"IIT_VOICE_TEST_COMPLETION_BYPASS": "1", "VERCEL": ""}),
+        ):
+            self.assertTrue(handler.completion_test_enabled())
+            with patch.object(server, "DATABASE_URL", "postgresql://not-a-real-credential"):
+                self.assertFalse(handler.completion_test_enabled())
+            with patch.dict(os.environ, {"VERCEL": "1"}):
+                self.assertFalse(handler.completion_test_enabled())
+            handler._online_demo = True
+            self.assertFalse(handler.completion_test_enabled())
+            handler._online_demo = False
+            handler.demo_enabled = lambda: False
+            self.assertFalse(handler.completion_test_enabled())
+
     def test_local_demo_startup_ignores_the_configured_cloud_database(self):
         with tempfile.TemporaryDirectory() as directory:
             with (
@@ -685,6 +705,63 @@ class SystemTests(unittest.TestCase):
         )
         self.assertEqual(code, 429, result)
 
+    def test_local_completion_bypass_is_explicit_audited_and_preserves_the_indoor_pin(self):
+        point = {"building_id": "old-cass", "floor_id": "second", "x": 0.25, "y": 0.8}
+        rid = self.report(indoor_location=point)
+        path = "/api/reports/" + str(rid)
+        self.assertEqual(self.review(rid, office_id=2, assigned_to=self.plant_user["id"])[0], 200)
+        body = {
+            "status": "resolved",
+            "note": "Preview final review",
+            "test_completion_bypass": True,
+        }
+        with patch.dict(os.environ, {"IIT_VOICE_TEST_COMPLETION_BYPASS": "1", "VERCEL": ""}):
+            self.assertEqual(self.plant.request(path, "PATCH", body)[0], 403)
+            with patch.object(server, "DEMO_LOGIN", True):
+                self.assertTrue(self.plant.request("/api/bootstrap")[1]["completion_test_enabled"])
+                self.assertFalse(
+                    self.student.request("/api/bootstrap")[1]["completion_test_enabled"]
+                )
+                self.assertEqual(self.student.request(path, "PATCH", body)[0], 403)
+                self.assertEqual(self.ict.request(path, "PATCH", body)[0], 404)
+                self.assertEqual(self.validator.request(path, "PATCH", body)[0], 403)
+                self.assertEqual(
+                    self.plant.request(
+                        path, "PATCH", body, extra_headers={"Host": "public.example"}
+                    )[0],
+                    403,
+                )
+                with patch.dict(os.environ, {"IIT_VOICE_TEST_COMPLETION_BYPASS": "0"}):
+                    self.assertEqual(self.plant.request(path, "PATCH", body)[0], 403)
+                self.assertEqual(
+                    self.plant.request(path, "PATCH", {**body, "test_completion_bypass": False})[0],
+                    400,
+                )
+                self.assertEqual(self.plant.request(path, "PATCH", body)[0], 200)
+                self.assertEqual(
+                    self.admin.request(
+                        path, "PATCH", {"status": "closed", "note": "Close preview"}
+                    )[0],
+                    400,
+                )
+                self.assertEqual(
+                    self.admin.request(path, "PATCH", {**body, "status": "closed"})[0], 200
+                )
+        detail = self.admin.request(path)[1]
+        self.assertEqual(detail["status"], "closed")
+        self.assertEqual(detail["indoor_location"], point)
+        self.assertFalse(detail["has_completion_evidence"])
+        self.assertEqual(detail["attachments"], [])
+        self.assertEqual(sum("LOCAL TEST ONLY" in e["message"] for e in detail["events"]), 2)
+        with server.connect() as c:
+            self.assertEqual(
+                c.execute(
+                    "SELECT count(*) FROM audit WHERE action='report.test_completion_bypass' AND entity=?",
+                    (str(rid),),
+                ).fetchone()[0],
+                2,
+            )
+
     def test_indoor_location_persists_for_the_reporter_and_assigned_staff_only(self):
         point = {"building_id": "old-cass", "floor_id": "second", "x": 0.25, "y": 0.8}
         rid = self.report(indoor_location=point, location_details="Room 215")
@@ -1205,6 +1282,24 @@ class SystemTests(unittest.TestCase):
             200,
         )
         self.assertEqual(self.plant.request("/api/reports/" + str(invalid))[0], 404)
+
+    def test_validator_can_submit_decisions_without_a_note(self):
+        for status in ("validated", "rejected"):
+            for note_fields in ({}, {"note": ""}, {"note": "   "}):
+                with self.subTest(status=status, note_fields=note_fields):
+                    path = "/api/reports/" + str(self.report())
+                    decision = {"status": status, **note_fields}
+                    if status == "validated":
+                        decision.update(office_id=2, assigned_to=self.plant_user["id"])
+                    for invalid in (None, [], "x" * 2001):
+                        self.assertEqual(
+                            self.validator.request(path, "PATCH", {**decision, "note": invalid})[0],
+                            400,
+                        )
+                    code, result = self.validator.request(path, "PATCH", decision)
+                    self.assertEqual(code, 200, result)
+                    self.assertEqual(result["status"], status)
+                    self.assertEqual(result["events"][-1]["message"], status)
 
     def test_validator_assesses_urgency_only_when_submitting_validation(self):
         for priority in ("low", "normal", "high", "urgent"):
