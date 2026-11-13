@@ -710,13 +710,15 @@ export default function App() {
           role="status"
           aria-busy="true"
         >
-          <span className="wandering-eyes" aria-hidden="true">
-            <span className="wandering-eyes-pair">
-              <span />
-              <span />
+          <div className="workspace-loading-content">
+            <span className="wandering-eyes" aria-hidden="true">
+              <span className="wandering-eyes-pair">
+                <span />
+                <span />
+              </span>
             </span>
-          </span>
-          <p className="workspace-loading-copy">Connecting to IIT Voice…</p>
+            <p className="workspace-loading-copy">Connecting to IIT Voice…</p>
+          </div>
         </div>
       ) : !user ? (
         <Auth signIn={signIn} api={api} />
