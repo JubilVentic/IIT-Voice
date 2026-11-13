@@ -2213,7 +2213,18 @@ details {
   }
 
   .location-map-stage.is-browsing {
-    height: clamp(540px, 82svh, 720px);
+    height: auto;
+    min-height: 0;
+    overflow: visible;
+    border: 0;
+    background: transparent;
+  }
+
+  .location-map-stage.is-browsing.is-floor-focused {
+    height: clamp(500px, 78svh, 680px);
+    overflow: hidden;
+    border: 1px solid var(--line);
+    background: white;
   }
 
   .location-map-stage.is-floor-focused {
@@ -2221,13 +2232,15 @@ details {
   }
 
   .location-map-stage.is-browsing > .map {
-    width: 100%;
-    height: 40%;
+    display: none;
   }
 
   .floor-choice-panel {
-    inset: 40% 0 0;
-    padding: 12px;
+    position: static;
+    padding: 16px;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    background: white;
   }
 
   .floor-preview-list {
