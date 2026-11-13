@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import campusPhoto from './assets/msu-iit-campus.png';
+import campusVideo from './assets/campus-video.mp4';
+import campusVideoWebm from './assets/campus-video.webm';
+import campusPoster from './assets/campus-video-poster.jpg';
 import systemQr from './assets/iit-voice-qr.svg';
 import systemQrPng from './assets/iit-voice-qr.png';
 import { VoiceContext, labels, useAction, useVoice, formValues } from './lib.js';
@@ -14,8 +16,11 @@ import {
   AuditPage,
 } from './pages/Dashboards.jsx';
 import { NewReport, ReportDetails } from './pages/ReportForms.jsx';
+import { ReportMap } from './components/Maps.jsx';
 
 function Auth({ signIn, api }) {
+  const [videoError, setVideoError] = useState('');
+  const video = useRef(null);
   const [mode, setMode] = useState('access'),
     [demoAccounts, setDemoAccounts] = useState([]),
     [demoMode, setDemoMode] = useState('local'),
@@ -74,13 +79,7 @@ function Auth({ signIn, api }) {
     action.run(() => signIn(values, googleProfileStep ? 'google' : 'anonymous'));
   };
   return (
-    <div className="auth-page">
-      <img
-        className="auth-campus-photo"
-        src={campusPhoto}
-        alt="MSU–IIT campus building framed by trees"
-        fetchPriority="high"
-      />
+    <div className="auth-page auth-video-background">
       <div className="auth-wrap">
         <section className="auth-story">
           <Brand />
@@ -95,6 +94,30 @@ function Auth({ signIn, api }) {
             <span className="access-pill">
               <Icon name="lock" /> Verified campus access
             </span>
+            <video
+              ref={video}
+              className="auth-campus-video"
+              poster={campusPoster}
+              autoPlay={!window.matchMedia('(prefers-reduced-motion: reduce)').matches}
+              muted
+              loop
+              playsInline
+              aria-label="MSU–IIT campus video"
+              onPlay={() => setVideoError('')}
+              onError={() =>
+                setVideoError('Video could not load. Please refresh the page to try again.')
+              }
+            >
+              <source
+                src={campusVideoWebm}
+                type="video/webm"
+              />
+              <source
+                src={campusVideo}
+                type="video/mp4"
+              />
+            </video>
+            {videoError && <ErrorMessage>{videoError}</ErrorMessage>}
           </div>
         </section>
         <section className="auth-card">
@@ -296,7 +319,8 @@ function navigation(user) {
   if (user.role === 'student')
     return [
       ['overview', 'Campus feed', 'grid'],
-      ['map', 'Campus map', 'map'],
+      ['voices', 'Campus voices', 'users'],
+      ['rate-service', 'Rate a service', 'users'],
       ['mine', 'My reports', 'report'],
       notifications,
     ];
@@ -311,7 +335,6 @@ function navigation(user) {
     return [
       ['overview', 'Review overview', 'grid'],
       ['queue', 'Review queue', 'report'],
-      ['map', 'Campus map', 'map'],
       ['reports', 'Reports', 'history'],
       notifications,
     ];
@@ -516,7 +539,9 @@ function Shell({ children, logout }) {
 
 function CurrentPage() {
   const { page, user } = useVoice();
-  if (page === 'map') return <MapPage />;
+  if (page === 'voices' && user.role === 'student') return <CampusVoices />;
+  if (page === 'rate-service' && user.role === 'student') return <ServiceRating />;
+  if (page === 'map' && user.role !== 'validator') return <MapPage />;
   if (['reports', 'queue', 'mine'].includes(page)) return <ReportsPage key={page} />;
   if (page === 'notifications') return <NotificationsPage />;
   if (user.role === 'admin') {
@@ -525,6 +550,41 @@ function CurrentPage() {
     if (page === 'audit') return <AuditPage />;
   }
   return <Overview />;
+}
+
+function ServiceRating() {
+  const offices = ['Cashier', 'Registrar', 'Library', 'Guidance and Counseling', 'ICT Services'];
+  const staff = { Cashier: ['Maria Santos', 'Joel Reyes'], Registrar: ['Ana Cruz', 'Paolo Lim'], Library: ['Liza Ramos', 'Marco Dizon'], 'Guidance and Counseling': ['Nina Flores'], 'ICT Services': ['Rico Mendoza'] };
+  const [query, setQuery] = useState(''), [office, setOffice] = useState(''), [building, setBuilding] = useState(null), [person, setPerson] = useState(''), [rating, setRating] = useState(0), [done, setDone] = useState(false);
+  const visible = offices.filter(name => name.toLowerCase().includes(query.toLowerCase()));
+  return <section className="voices-page"><header className="voices-head"><span className="eyebrow">CAMPUS COMMUNITY</span><h1>Rate a service</h1><p>Recognize helpful service and share how your visit went.</p></header>
+    {done ? <div className="panel service-thanks"><h2>Thank you for your feedback.</h2><p>Your rating for {office} has been recorded in this demo.</p><button className="btn" onClick={()=>{setDone(false);setOffice('');setPerson('');setRating(0)}}>Rate another service</button></div> : <>
+      <section className="panel service-select"><h2>1. Choose an office</h2><p className="muted">Click a campus building, then choose the office you visited.</p><div className="service-map"><ReportMap large fitCampusOnResize selectBuildings onBuildingPick={b=>{setBuilding(b);setOffice('');setPerson('');setRating(0)}} mapFrameClassName="service-map-canvas"/></div>{building&&<p className="service-building-selected">Selected building: <strong>{building.name}</strong></p>}
+      <label className="service-search">Find an office<input value={query} onChange={e=>setQuery(e.target.value)} placeholder="Search offices"/></label><div className="service-office-list">{visible.map(name=><button className="btn" aria-pressed={office===name} key={name} onClick={()=>{setOffice(name);setPerson('');setRating(0)}}>{name}</button>)}</div></section>
+      {office&&<section className="panel service-select"><h2>2. Who helped you at {office}?</h2><p className="muted">Choose a staff member if you remember them, or skip this step.</p><div className="service-staff">{staff[office].map((name,i)=><button className="btn service-person" aria-pressed={person===name} key={name} onClick={()=>setPerson(name)}><span className="service-avatar">{name.split(' ').map(x=>x[0]).join('')}</span>{name}</button>)}<button className="btn" aria-pressed={person===''} onClick={()=>setPerson('')}>I’m not sure</button></div><h2>3. How was your experience?</h2><div className="service-ratings">{[['😞','Very unhappy'],['🙁','Unhappy'],['😐','Neutral'],['🙂','Happy'],['😄','Very happy']].map(([emoji,label],i)=><button className="btn" aria-pressed={rating===i+1} key={label} onClick={()=>setRating(i+1)}><span>{emoji}</span>{label}</button>)}</div><textarea className="service-comment" placeholder="Optional comment" maxLength="500"/><button className="btn primary" disabled={!rating} onClick={()=>setDone(true)}>Submit rating</button></section>}
+    </>}
+  </section>;
+}
+
+function CampusVoices() {
+  const [kind, setKind] = useState('Appreciation');
+  const [posts, setPosts] = useState([
+    { id: 1, kind: 'Appreciation', title: 'Thank you to the library staff', body: 'They helped me find the references I needed before my deadline.', place: 'CASS Library', votes: 12, comments: ['That team is always helpful.'] },
+    { id: 2, kind: 'Feedback', title: 'More shaded seating near the walkway', body: 'A few benches with shade would make waiting between classes much more comfortable.', place: 'Near CSM', votes: 8, comments: [] },
+  ]);
+  const [voted, setVoted] = useState([]);
+  const [comment, setComment] = useState({});
+  function submit(e) {
+    e.preventDefault();
+    const form = new FormData(e.currentTarget);
+    setPosts([{ id: Date.now(), kind, title: form.get('title'), body: form.get('body'), place: form.get('place'), votes: 0, comments: [] }, ...posts]);
+    e.currentTarget.reset();
+  }
+  return <section className="voices-page">
+    <header className="voices-head"><span className="eyebrow">CAMPUS COMMUNITY</span><h1>Campus Voices</h1><p>Share appreciation and ideas to make campus life better.</p></header>
+    <form className="panel voices-compose" onSubmit={submit}><h2>Share something about campus</h2><div className="map-switch">{['Appreciation','Feedback'].map((v)=><button className="btn" type="button" aria-pressed={kind===v} onClick={()=>setKind(v)} key={v}>{v}</button>)}</div><input name="title" required maxLength="120" placeholder="Give your post a title"/><textarea name="body" required maxLength="1000" placeholder="What would you like the campus community to know?"/><input name="place" maxLength="80" placeholder="Location (optional)"/><div className="voices-foot"><small>Campus-related posts only. No ads or buy-and-sell posts.</small><button className="btn primary">Post {kind.toLowerCase()}</button></div></form>
+    <div className="voices-feed">{posts.map(post=><article className="panel voices-post" key={post.id}><span className={`voices-tag ${post.kind==='Feedback'?'feedback':''}`}>{post.kind}</span><h2>{post.title}</h2><p>{post.body}</p>{post.place&&<small className="muted">⌖ {post.place}</small>}<div className="voices-actions"><button className="btn" aria-pressed={voted.includes(post.id)} onClick={()=>{const active=voted.includes(post.id);setVoted(active?voted.filter(id=>id!==post.id):[...voted,post.id]);setPosts(posts.map(p=>p.id===post.id?{...p,votes:p.votes+(active?-1:1)}:p))}}>↑ {voted.includes(post.id)?'Appreciated':'Appreciate'} · {post.votes}</button><span>{post.comments.length} comments</span></div><form className="voices-comment" onSubmit={e=>{e.preventDefault();const value=comment[post.id]?.trim();if(value){setPosts(posts.map(p=>p.id===post.id?{...p,comments:[...p.comments,value]}:p));setComment({...comment,[post.id]:''})}}}><input value={comment[post.id]||''} onChange={e=>setComment({...comment,[post.id]:e.target.value})} placeholder="Write a campus-related comment…"/><button className="btn" disabled={!comment[post.id]?.trim()}>Comment</button></form>{post.comments.map((c,i)=><p className="voices-reply" key={i}>{c}</p>)}</article>)}</div>
+  </section>;
 }
 
 export default function App() {

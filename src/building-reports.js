@@ -22,7 +22,8 @@ export function summaryBuildingOutline(id) {
     : campus.buildings
         .find((b) => b.name === building.name)
         ?.outline.map(([latitude, longitude]) => planPosition({ latitude, longitude }));
-  return outline ? { id: building.id, name: building.name, outline } : null;
+  const holes = building.holes?.map((ring) => ring.map(campusImagePoint));
+  return outline ? { id: building.id, name: building.name, outline, holes } : null;
 }
 
 export function reportBuildingLocation(report) {

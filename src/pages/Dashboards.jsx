@@ -15,7 +15,7 @@ import {
 import { ErrorMessage, Hero, Icon, Panel, ReportList, Stats } from '../components/UI.jsx';
 import { CategoryOptions } from '../components/Categories.jsx';
 import { CampusMap } from '../components/Maps.jsx';
-import { ReportAnalytics } from '../components/ReportAnalytics.jsx';
+import { ReportAnalytics, ReportHotspots } from '../components/ReportAnalytics.jsx';
 
 const isOpen = (r) => !['closed', 'resolved', 'rejected', 'duplicate'].includes(r.status);
 const isPending = (r) => ['submitted', 'needs_information'].includes(r.status);
@@ -95,6 +95,9 @@ export function Overview() {
             ],
           ]}
         />
+        <Panel title="Map of assigned concerns" detail={`${reports.length} assigned reports`}>
+          <CampusMap reports={reports} large />
+        </Panel>
         <Panel title="Latest assigned concerns">
           <ReportList reports={[...reports].sort(newestFirst).slice(0, 8)} />
         </Panel>
@@ -128,9 +131,13 @@ export function Overview() {
           ],
         ]}
       />
+      <ReportHotspots reports={reports} />
       <div className="columns">
-        <Panel title="Review queue" detail={`${pending.length} concerns`}>
-          <ReportList reports={[...pending].sort(newestFirst).slice(0, 5)} />
+        <Panel title="Review queue" detail={`${pending.length} concerns awaiting review`}>
+          <p className="meta">Open the queue to search, filter, and review submitted concerns.</p>
+          <button className="btn primary" onClick={() => setPage('queue')}>
+            Open review queue →
+          </button>
         </Panel>
         <Panel title="A careful review, every time.">
           <div className="list-row">

@@ -174,3 +174,11 @@ export function reportHotspots(reports) {
     longitude: reports.reduce((sum, report) => sum + report.longitude, 0) / reports.length,
   }));
 }
+
+export function hotspotScale(reports) {
+  const max = Math.max(0, ...reportHotspots(reports).map((cell) => cell.count));
+  if (max < 4) return { low: 1, high: 3, labels: ['1 report', '2–3 reports', '4+ reports'] };
+  const low = Math.max(1, Math.ceil(max / 3));
+  const high = Math.max(low + 1, Math.ceil((max * 2) / 3));
+  return { low, high, labels: [`1–${low} reports`, `${low + 1}–${high} reports`, `${high + 1}+ reports`] };
+}

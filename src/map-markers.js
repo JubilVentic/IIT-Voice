@@ -1,5 +1,11 @@
 import { matchesCategory, isActiveReport, isCompletedReport } from './lib.js';
 
+export const statusPins = {
+  problem: { color: '#b62f46', symbol: '!' },
+  working: { color: '#aa701b', symbol: '…' },
+  resolved: { color: '#357554', symbol: '✓' },
+};
+
 export const categoryPins = {
   'Facilities, Infrastructure & Maintenance': { color: '#95612b', symbol: '1' },
   'Safety, Security & Risk': { color: '#b62f46', symbol: '2' },
@@ -19,13 +25,12 @@ export const priorityPins = {
   urgent: { color: '#b62f46', symbol: 'U' },
 };
 
-export const pinAppearance = (report, colorBy) => ({
-  ...((colorBy === 'category' ? categoryPins[report.category] : priorityPins[report.priority]) || {
-    color: '#7a203c',
-    symbol: '?',
-  }),
-  completed: isCompletedReport(report),
-});
+export const pinAppearance = (report) =>
+  isCompletedReport(report)
+    ? statusPins.resolved
+    : report.status === 'in_progress'
+      ? statusPins.working
+      : statusPins.problem;
 export const hasMapPin = (report) =>
   Number.isFinite(report.latitude) && Number.isFinite(report.longitude);
 

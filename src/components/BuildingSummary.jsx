@@ -3,15 +3,15 @@ import {
   buildingExportRows,
   reportCsv,
   summarizeBuildings,
-  summaryBuildings,
   summaryBuildingOutline,
 } from '../building-reports.js';
 import { filterSummaryReports, submissionDay } from '../report-summary.js';
-import { Field, Icon, Panel } from './UI.jsx';
+import { Icon, Panel } from './UI.jsx';
 import { isActiveReport, priorities, statusLabels } from '../lib.js';
 import { ReportMap } from './Maps.jsx';
-import { FloorPlan } from './FloorPlans.jsx';
-import { indoorBuildings } from '../indoor-location.js';
+import { FloorPlan, floorImages, floorImageStyle } from './FloorPlans.jsx';
+import { hasIndoorPoint, indoorBuildings } from '../indoor-location.js';
+import { pinAppearance } from '../map-markers.js';
 
 function LocationBars({ rows, selected, onSelect, label }) {
   const max = Math.max(1, ...rows.map((row) => row.count));
@@ -103,43 +103,6 @@ export function BuildingSummary({ reports, visible, filters, offices, onChange }
         once, even when it has several categories.
       </p>
       <div className="building-summary-toolbar">
-        <div
-          className="building-summary-filters"
-          role="group"
-          aria-label="Building and floor filters"
-        >
-          <Field label="Building">
-            <select
-              aria-label="Building"
-              value={filters.building}
-              onChange={(e) => onChange('building', e.target.value)}
-            >
-              <option value="">All buildings</option>
-              {summaryBuildings
-                .filter((b) => !['Erchedon Pension House', 'Elena Tower'].includes(b.name))
-                .map((b) => (
-                  <option key={b.id} value={b.id}>
-                    {b.name}
-                  </option>
-                ))}
-            </select>
-          </Field>
-          <Field label="Floor">
-            <select
-              aria-label="Floor"
-              value={filters.floor}
-              disabled={!selected}
-              onChange={(e) => onChange('floor', e.target.value)}
-            >
-              <option value="">{selected ? 'All floors' : 'Choose a building first'}</option>
-              {selected?.floors.map((f) => (
-                <option key={f.id} value={f.id}>
-                  {f.name}
-                </option>
-              ))}
-            </select>
-          </Field>
-        </div>
         <div className="building-summary-downloads">
           <button
             type="button"
@@ -214,13 +177,15 @@ export function BuildingSummary({ reports, visible, filters, offices, onChange }
                     ? `${focusBuilding.name} · ${filters.floor === 'unspecified' ? 'Floor not recorded; showing the building.' : 'Choose a floor to see its plan, where available.'}`
                     : filters.building === 'unmapped'
                       ? 'These reports have no recognized building. Showing available campus pins.'
-                      : 'Choose a building to zoom in, then a floor to see its report pins.'}
+                      : 'Select a building on the map, then choose a floor from the floor breakdown.'}
                 </p>
                 <ReportMap
                   key={filters.building || 'campus'}
                   reports={visible}
                   mapId="summary-building-map"
                   focusBuilding={focusBuilding}
+                  selectBuildings
+                  onBuildingPick={(building) => onChange('building', building.id)}
                 />
               </>
             )}
@@ -230,7 +195,31 @@ export function BuildingSummary({ reports, visible, filters, offices, onChange }
           <h3>{selected ? selected.name : 'Floor breakdown'}</h3>
           {selected ? (
             <>
-              <p className="map-caption">Select a floor to filter the dashboard and export.</p>
+              <p className="map-caption">Choose a floor to filter the dashboard and export.</p>
+              {floorImages[selected.id] && (
+                <div className="floor-selector floor-preview-list" role="group" aria-label={`${selected.name} floor plans`}>
+                  {selected.floors.filter((item) => floorImages[selected.id][item.id]).map((item) => (
+                    <button
+                      key={item.id}
+                      type="button"
+                      className="floor-preview-card"
+                      aria-pressed={filters.floor === item.id}
+                      onClick={() => onChange('floor', item.id)}
+                    >
+                      <span className="floor-preview-image">
+                        <img className="floor-plan-image" style={floorImageStyle(item.id)} src={floorImages[selected.id][item.id]} alt="" loading="lazy" />
+                        {visible.filter((report) => {
+                          const pin = report.indoor_location;
+                          return hasIndoorPoint(pin) && pin.building_id === selected.id && pin.floor_id === item.id;
+                        }).map((report) => (
+                          <span key={report.id} className="floor-preview-pin" title={report.title} style={{ left: `${report.indoor_location.x * 100}%`, top: `${report.indoor_location.y * 100}%`, backgroundColor: pinAppearance(report).color }} />
+                        ))}
+                      </span>
+                      <strong>{item.name}</strong>
+                    </button>
+                  ))}
+                </div>
+              )}
               <LocationBars
                 rows={selected.floors}
                 selected={filters.floor}
@@ -243,7 +232,7 @@ export function BuildingSummary({ reports, visible, filters, offices, onChange }
               <Icon name="map" />
               <strong>Explore a building</strong>
               <p>
-                Choose a building from the chart or dropdown to see reports on each recorded floor.
+                Choose a building on the map or from the comparison chart to see reports on each recorded floor.
               </p>
             </div>
           )}

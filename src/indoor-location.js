@@ -11,6 +11,10 @@ export function campusImagePoint([x, y]) {
   ];
 }
 
+export function campusImageRings(building) {
+  return [building.outline, ...(building.holes || [])].map((ring) => ring.map(campusImagePoint));
+}
+
 export function buildingPin(building) {
   const [lat, lng] = campusImagePoint(building.anchor);
   return gpsPosition({ lat, lng });

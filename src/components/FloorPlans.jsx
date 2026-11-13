@@ -15,7 +15,7 @@ import second from '../assets/floor-plans/cass-second.png';
 import third from '../assets/floor-plans/cass-third.png';
 import fourth from '../assets/floor-plans/cass-fourth.png';
 
-const images = { 'old-cass': { ground, second, third, fourth } };
+export const floorImages = { 'old-cass': { ground, second, third, fourth } };
 // Page margins are hidden visually; keep the source coordinates unchanged for saved pins.
 const floorInsets = {
   ground: [5.5, 2.5, 9.5, 2.5],
@@ -23,7 +23,7 @@ const floorInsets = {
   third: [3, 2, 9.5, 2],
   fourth: [4.5, 3, 11, 3],
 };
-const floorImageStyle = (id) => ({ clipPath: `inset(${floorInsets[id].join('% ')}%)` });
+export const floorImageStyle = (id) => ({ clipPath: `inset(${floorInsets[id].join('% ')}%)` });
 const bounds = [
   [0, 0],
   [750, 1000],
@@ -72,7 +72,7 @@ export function FloorPlan({ location, onPick, report, reports }) {
       markerZoomAnimation: animate,
     }).setView([375, 500], -1);
     mapRef.current = map;
-    const overlay = L.imageOverlay(images[location.building_id][location.floor_id], bounds, {
+    const overlay = L.imageOverlay(floorImages[location.building_id][location.floor_id], bounds, {
       alt: `${label} floor plan`,
       className: 'floor-plan-image',
     })
@@ -356,7 +356,7 @@ export function ReportLocationPicker({ pin, indoor, onPick, onComplete }) {
                           <img
                             className="floor-plan-image"
                             style={floorImageStyle(floor.id)}
-                            src={images[building.id][floor.id]}
+                            src={floorImages[building.id][floor.id]}
                             alt=""
                             loading="lazy"
                           />

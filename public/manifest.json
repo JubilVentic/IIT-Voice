@@ -1,0 +1,16 @@
+{
+  "id": "/",
+  "name": "IIT Voice · MSU–IIT Campus Concerns",
+  "short_name": "IIT Voice",
+  "description": "Report campus concerns, follow progress, and share campus feedback.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#f7f5f0",
+  "theme_color": "#7a203c",
+  "icons": [
+    { "src": "/pwa-icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/pwa-icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}

@@ -1579,10 +1579,14 @@ class Handler(BaseHTTPRequestHandler):
                     status == r["status"] or status in TRANSITIONS[r["status"]],
                     "This status transition is not allowed.",
                 )
-                note = field(b, "note", 2, 2000)
+                note = field(b, "note", 0, 2000)
                 visibility = b.get("visibility", r["visibility"])
                 summary = b.get("public_summary", r["public_summary"])
                 public_title = b.get("public_title", r["public_title"])
+                if status == "resolved":
+                    visibility = "campus"
+                    public_title = public_title.strip() or "Resolved campus concern"
+                    summary = summary.strip() or "This concern was resolved by the responsible campus office."
                 check(visibility in ("campus", "restricted"), "Invalid visibility.")
                 check(
                     isinstance(summary, str) and len(summary) <= 3000, "Public summary is too long."

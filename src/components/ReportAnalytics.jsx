@@ -3,6 +3,7 @@ import { newestFirst, priorities, priorityOrder, statusLabels, useVoice } from '
 import {
   dateWindow,
   filterSummaryReports,
+  hotspotScale,
   isActiveReport,
   submissionTrend,
   summarizeReports,
@@ -10,7 +11,7 @@ import {
 import { categoryPins, hasMapPin, priorityPins } from '../map-markers.js';
 import { ErrorMessage, Field, Hero, Panel, ReportList, Stats } from './UI.jsx';
 import { CategoryOptions } from './Categories.jsx';
-import { ReportMap } from './Maps.jsx';
+import { CampusMap } from './Maps.jsx';
 import { BuildingSummary } from './BuildingSummary.jsx';
 
 const defaults = {
@@ -160,8 +161,7 @@ function StatusChart({ summary, selected, onSelect }) {
 
 export function ReportAnalytics() {
   const { data, user, setPage } = useVoice();
-  const [filters, setFilters] = useState(defaults),
-    [density, setDensity] = useState(true);
+  const [filters, setFilters] = useState(defaults);
   const range =
     filters.period === 'custom'
       ? { from: filters.from, through: filters.through }
@@ -439,61 +439,7 @@ export function ReportAnalytics() {
             ))}
         </Panel>
       </div>
-      <Panel
-        title="Report hotspots"
-        className="full"
-        detail={`${pinned} mapped · ${visible.length - pinned} without a pin`}
-      >
-        <p className="meta">
-          See where reports are concentrated. Nearby pins are grouped into geographic grid cells;
-          darker circles mean more reports. Select a circle to open its reports.
-        </p>
-        <div className="map-switch" role="group" aria-label="Summary map view">
-          <button
-            type="button"
-            className="btn"
-            aria-pressed={density}
-            onClick={() => setDensity(true)}
-          >
-            Report concentration
-          </button>
-          <button
-            type="button"
-            className="btn"
-            aria-pressed={!density}
-            onClick={() => setDensity(false)}
-          >
-            Individual pins
-          </button>
-        </div>
-        <ReportMap reports={visible} density={density} large />
-        {!pinned && <p className="notice">No reports with map pins match this selection.</p>}
-        {density ? (
-          <div className="map-legend" aria-label="Report concentration legend">
-            {[
-              ['#aa701b', '1 report'],
-              ['#bb5630', '2–3 reports'],
-              ['#98283d', '4+ reports'],
-            ].map(([color, label]) => (
-              <span key={label}>
-                <i className="legend-symbol" style={{ background: color }} />
-                {label}
-              </span>
-            ))}
-          </div>
-        ) : (
-          <div className="map-legend" aria-label="Priority legend">
-            {Object.entries(priorityPins).map(([value, pin]) => (
-              <span key={value}>
-                <span className="legend-symbol" style={{ background: pin.color }}>
-                  {pin.symbol}
-                </span>
-                {priorities[value].label}
-              </span>
-            ))}
-          </div>
-        )}
-      </Panel>
+      <ReportHotspots reports={visible} />
       <div className="summary-grid full">
         <Panel title="Latest matching reports" detail={`${visible.length} total`}>
           <ReportList reports={[...visible].sort(newestFirst).slice(0, 6)} />
@@ -516,5 +462,55 @@ export function ReportAnalytics() {
         </div>
       </Panel>
     </div>
+  );
+}
+
+export function ReportHotspots({ reports, className = 'full' }) {
+  const [density, setDensity] = useState(true);
+  const pinned = reports.filter(hasMapPin).length;
+  const activeReports = reports.filter(isActiveReport);
+  return (
+    <Panel
+      title="Report hotspots"
+      className={className}
+      detail={`${pinned} mapped · ${reports.length - pinned} without a pin`}
+    >
+      <p className="meta">
+        Current unresolved reports are grouped into geographic grid cells. Concentration colors
+        scale to the busiest area in the current selection; resolved reports remain in building
+        and floor totals below.
+      </p>
+      <div className="map-switch" role="group" aria-label="Summary map view">
+        <button type="button" className="btn" aria-pressed={density} onClick={() => setDensity(true)}>
+          Report concentration
+        </button>
+        <button type="button" className="btn" aria-pressed={!density} onClick={() => setDensity(false)}>
+          Individual pins
+        </button>
+      </div>
+      <CampusMap reports={density ? activeReports : reports} mapMode={density ? 'density' : 'reports'} large />
+      {!pinned && <p className="notice">No reports with map pins match this selection.</p>}
+      {density ? (
+        <div className="map-legend" aria-label="Report concentration legend">
+          {hotspotScale(activeReports).labels.map((label, index) => (
+            <span key={label}>
+              <i className="legend-symbol" style={{ background: ['#aa701b', '#bb5630', '#98283d'][index] }} />
+              {label}
+            </span>
+          ))}
+        </div>
+      ) : (
+        <div className="map-legend" aria-label="Priority legend">
+          {Object.entries(priorityPins).map(([value, pin]) => (
+            <span key={value}>
+              <span className="legend-symbol" style={{ background: pin.color }}>
+                {pin.symbol}
+              </span>
+              {priorities[value].label}
+            </span>
+          ))}
+        </div>
+      )}
+    </Panel>
   );
 }

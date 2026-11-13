@@ -9,38 +9,19 @@ import {
   isOnPlan,
   planUnitsPerMeter,
 } from '../campus-plan.js';
-import { reportHotspots } from '../report-summary.js';
+import { hotspotScale, reportHotspots } from '../report-summary.js';
 import { currentLocation } from '../current-location.js';
 import { CategoryOptions } from './Categories.jsx';
-import { campusImagePoint, indoorBuildings } from '../indoor-location.js';
+import { FloorPlan, floorImages, floorImageStyle } from './FloorPlans.jsx';
+import { campusImagePoint, campusImageRings, hasIndoorPoint, indoorBuildings } from '../indoor-location.js';
 import {
-  categoryPins,
-  priorityPins,
   pinAppearance,
   hasMapPin,
   filterMapReports,
+  statusPins,
 } from '../map-markers.js';
 
 const emptyReports = [];
-function buildingHoverImage(building, id) {
-  const width = campusBounds[1][1] - campusBounds[0][1],
-    height = campusBounds[1][0] - campusBounds[0][0];
-  const xs = building.outline.map(([x]) => x * width),
-    ys = building.outline.map(([, y]) => y * height);
-  const points = xs.map((x, index) => `${x},${ys[index]}`).join(' ');
-  const center = [(Math.min(...xs) + Math.max(...xs)) / 2, (Math.min(...ys) + Math.max(...ys)) / 2];
-  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-  svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
-  svg.setAttribute('aria-hidden', 'true');
-  // Only the roof is copied; the courtyard and nearby buildings stay on the base map.
-  svg.innerHTML = `
-    <defs><clipPath id="${id}"><polygon points="${points}" /></clipPath></defs>
-    <polygon class="building-hover-original" points="${points}" fill="white" />
-    <g class="building-hover-image" style="transform-origin:${center[0]}px ${center[1]}px">
-      <image href="${campusPlanUrl}" width="${width}" height="${height}" clip-path="url(#${id})" />
-    </g>`;
-  return svg;
-}
 export function pinIcon({
   color = '#7a203c',
   symbol = '',
@@ -72,6 +53,7 @@ export function ReportMap({
   hidePickControls = false,
   fitCampusOnResize = false,
   focusBuilding = null,
+  selectBuildings = false,
 }) {
   const { openReport, toast } = useVoice();
   const container = useRef(null),
@@ -92,6 +74,7 @@ export function ReportMap({
     onBuildingPick,
     fitCampusOnResize,
     focusBuilding,
+    selectBuildings,
   };
   async function useCurrentLocation() {
     if (!navigator.geolocation) {
@@ -176,7 +159,12 @@ export function ReportMap({
       button.setAttribute('aria-label', 'Show the whole campus plan');
       L.DomEvent.disableClickPropagation(button);
       L.DomEvent.disableScrollPropagation(button);
-      button.addEventListener('click', () => map.fitBounds(campusBounds, { padding: [16, 16] }));
+      button.addEventListener('click', () => {
+        requestAnimationFrame(() => {
+          map.invalidateSize({ pan: false, animate: false });
+          map.fitBounds(campusBounds, { padding: [16, 16], maxZoom: 2.5, animate: false });
+        });
+      });
       return button;
     };
     fitControl.addTo(map);
@@ -247,7 +235,10 @@ export function ReportMap({
   useEffect(() => {
     const map = mapRef.current;
     if (!map || pick || !focusBuilding) return;
-    const outline = L.polygon(focusBuilding.outline, {
+    const rings = focusBuilding.holes?.length
+      ? [focusBuilding.outline, ...focusBuilding.holes]
+      : focusBuilding.outline;
+    const outline = L.polygon(rings, {
       color: '#7a203c',
       weight: 2,
       fillOpacity: 0.06,
@@ -257,12 +248,12 @@ export function ReportMap({
     outline.getElement()?.setAttribute('aria-label', focusBuilding.name);
     return () => outline.remove();
   }, [focusBuilding, pick]);
-  const selectableBuildings = pick && Boolean(onBuildingPick);
+  const selectableBuildings = (pick || selectBuildings) && Boolean(onBuildingPick);
   useEffect(() => {
     if (!selectableBuildings || !mapRef.current) return;
     const outlines = L.layerGroup().addTo(mapRef.current);
     indoorBuildings.forEach((building) => {
-      const shape = L.polygon(building.outline.map(campusImagePoint), {
+      const shape = L.polygon(campusImageRings(building), {
         color: '#404040',
         weight: 1.25,
         opacity: 0,
@@ -274,9 +265,6 @@ export function ReportMap({
       const open = () => callbacks.current.onBuildingPick?.(building);
       shape.on('click', open);
       const element = shape.getElement();
-      const image = buildingHoverImage(building, `building-clip-${L.stamp(shape)}`);
-      image.dataset.buildingId = building.id;
-      L.svgOverlay(image, campusBounds, { className: 'building-hover-overlay' }).addTo(outlines);
       let hovering = false;
       const updateHover = () => {
         const active =
@@ -284,7 +272,6 @@ export function ReportMap({
             window.matchMedia('(hover: hover)').matches) ||
           element.matches(':focus-visible');
         element.classList.toggle('is-hovered', active);
-        image.classList.toggle('is-hovered', active);
       };
       shape.on('mouseover', () => {
         hovering = true;
@@ -317,8 +304,9 @@ export function ReportMap({
     if (!map || pick) return;
     const markers = L.layerGroup().addTo(map);
     if (density) {
+      const scale = hotspotScale(reports);
       reportHotspots(reports).forEach((cell) => {
-        const color = cell.count >= 4 ? '#98283d' : cell.count >= 2 ? '#bb5630' : '#aa701b';
+        const color = cell.count > scale.high ? '#98283d' : cell.count > scale.low ? '#bb5630' : '#aa701b';
         const size = 28 + Math.min(14, cell.count * 2);
         const popup = document.createElement('div');
         const heading = document.createElement('strong');
@@ -513,63 +501,51 @@ export function ReportMap({
   );
 }
 
-export function CampusMap({ reports, large = false }) {
-  const { data } = useVoice();
+export function CampusMap({ reports, large = false, mapMode = null }) {
   const [view, setView] = useState('reports');
-  const [colorBy, setColorBy] = useState('priority'),
-    [category, setCategory] = useState(''),
+  const [selectedBuilding, setSelectedBuilding] = useState(null);
+  const [selectedFloor, setSelectedFloor] = useState(''),
+    [floorExpanded, setFloorExpanded] = useState(false);
+  const [category, setCategory] = useState(''),
     [priority, setPriority] = useState(''),
-    [status, setStatus] = useState('active');
+    [status, setStatus] = useState('');
   const visible = useMemo(
     () => filterMapReports(reports, { category, priority, status }),
     [reports, category, priority, status]
   );
-  const legend =
-    colorBy === 'priority'
-      ? Object.keys(priorities).map((value) => ({
-          value,
-          label: priorities[value].label,
-          ...priorityPins[value],
-        }))
-      : data.categories
-          .filter((value) => visible.some((r) => r.category === value))
-          .map((value) => ({ value, label: value, ...categoryPins[value] }));
+  const activeView = mapMode || view;
+  const legend = [
+    { ...statusPins.problem, label: 'Needs attention' },
+    { ...statusPins.working, label: 'Work in progress' },
+    { ...statusPins.resolved, label: 'Resolved or closed' },
+  ];
   return (
     <>
-      <div className="map-switch" role="group" aria-label="Campus map view">
-        <button
-          type="button"
-          className="btn"
-          data-map-view="plan"
-          aria-pressed={view === 'plan'}
-          onClick={() => setView('plan')}
-        >
-          Campus plan
-        </button>
-        <button
-          type="button"
-          className="btn"
-          data-map-view="reports"
-          aria-pressed={view === 'reports'}
-          onClick={() => setView('reports')}
-        >
-          Report pins
-        </button>
-      </div>
-      {view === 'reports' && (
+      {!mapMode && (
+        <div className="map-switch" role="group" aria-label="Campus map view">
+          <button
+            type="button"
+            className="btn"
+            data-map-view="plan"
+            aria-pressed={activeView === 'plan'}
+            onClick={() => setView('plan')}
+          >
+            Campus plan
+          </button>
+          <button
+            type="button"
+            className="btn"
+            data-map-view="reports"
+            aria-pressed={activeView === 'reports'}
+            onClick={() => setView('reports')}
+          >
+            Report pins
+          </button>
+        </div>
+      )}
+      {activeView === 'reports' && (
         <>
           <div className="map-filters" role="group" aria-label="Filter report pins">
-            <label>
-              Color pins by
-              <select
-                aria-label="Color pins by"
-                value={colorBy}
-                onChange={(e) => setColorBy(e.target.value)}
-              >
-                <option value="priority">Priority</option>
-                <option value="category">Primary category</option>
-              </select>
-            </label>
             <label>
               Category
               <select
@@ -625,7 +601,7 @@ export function CampusMap({ reports, large = false }) {
                 onClick={() => {
                   setCategory('');
                   setPriority('');
-                  setStatus('active');
+                  setStatus('');
                 }}
               >
                 Reset map filters
@@ -640,15 +616,87 @@ export function CampusMap({ reports, large = false }) {
         </>
       )}
       <ReportMap
-        reports={view === 'reports' ? visible : emptyReports}
+        key={selectedBuilding?.id || 'campus'}
+        reports={activeView === 'plan' ? emptyReports : visible}
         large={large}
-        colorBy={colorBy}
+        density={activeView === 'density'}
+        selectBuildings
+        onBuildingPick={(building) => {
+          setSelectedBuilding(building);
+          setSelectedFloor('');
+          setFloorExpanded(false);
+        }}
+        focusBuilding={selectedBuilding ? {
+          name: selectedBuilding.name,
+          outline: selectedBuilding.outline.map(campusImagePoint),
+          holes: selectedBuilding.holes?.map((ring) => ring.map(campusImagePoint)),
+        } : null}
+        mapFrameClassName={`location-map-stage map-building-browser ${selectedBuilding ? 'is-browsing' : ''} ${floorExpanded ? 'is-floor-focused' : ''}`}
+        mapOverlay={selectedBuilding && (
+          <>
+            {!floorExpanded ? (
+              <aside className="floor-choice-panel" aria-label={`${selectedBuilding.name} floor choices`}>
+                <div className="picker-toolbar">
+                  <button type="button" className="btn" onClick={() => setSelectedBuilding(null)}>
+                    ← Back to campus map
+                  </button>
+                </div>
+                <h3>{selectedBuilding.name}</h3>
+                {selectedBuilding.floors.length ? (
+                  <>
+                    <p className="meta">Choose a floor to view its report pins.</p>
+                    <div className="floor-selector floor-preview-list" role="group" aria-label="Choose a floor">
+                      {selectedBuilding.floors.map((floor) => (
+                        <button
+                          key={floor.id}
+                          type="button"
+                          className="floor-preview-card"
+                          aria-label={floor.name}
+                          onClick={() => {
+                            setSelectedFloor(floor.id);
+                            setFloorExpanded(true);
+                          }}
+                        >
+                          <span className="floor-preview-image">
+                            <img className="floor-plan-image" style={floorImageStyle(floor.id)} src={floorImages[selectedBuilding.id][floor.id]} alt="" loading="lazy" />
+                            {visible.filter((report) => {
+                              const pin = report.indoor_location;
+                              return hasIndoorPoint(pin) && pin.building_id === selectedBuilding.id && pin.floor_id === floor.id;
+                            }).map((report) => (
+                              <span
+                                key={report.id}
+                                className="floor-preview-pin"
+                                title={`${report.title} · ${statusLabels[report.status]}`}
+                                style={{ left: `${report.indoor_location.x * 100}%`, top: `${report.indoor_location.y * 100}%`, backgroundColor: pinAppearance(report).color }}
+                              />
+                            ))}
+                          </span>
+                          <strong>{floor.name}</strong>
+                        </button>
+                      ))}
+                    </div>
+                  </>
+                ) : <p className="notice">Floor plans are not available for this building yet.</p>}
+              </aside>
+            ) : (
+              <div className="picker-full-floor">
+                <div className="picker-toolbar">
+                  <button type="button" className="btn" onClick={() => setFloorExpanded(false)}>← Back to floor choices</button>
+                  <button type="button" className="btn" onClick={() => setSelectedBuilding(null)}>← Back to campus map</button>
+                </div>
+                <div className="floor-selector" role="group" aria-label="Choose a floor">
+                  {selectedBuilding.floors.map((floor) => (
+                    <button key={floor.id} type="button" className="btn" aria-pressed={selectedFloor === floor.id} onClick={() => setSelectedFloor(floor.id)}>{floor.name}</button>
+                  ))}
+                </div>
+                <FloorPlan key={`${selectedBuilding.id}/${selectedFloor}`} location={{ building_id: selectedBuilding.id, floor_id: selectedFloor }} reports={visible} />
+              </div>
+            )}
+          </>
+        )}
       />
-      {view === 'reports' && (
-        <div
-          className="map-legend"
-          aria-label={colorBy === 'priority' ? 'Priority legend' : 'Primary category legend'}
-        >
+      {activeView === 'reports' && (
+        <div className="map-legend" aria-label="Report status legend">
           {legend.map((item) => (
             <span key={item.value}>
               <span
@@ -661,22 +709,15 @@ export function CampusMap({ reports, large = false }) {
               {item.label}
             </span>
           ))}
-          <span>
-            <span className="legend-symbol completion-symbol" aria-hidden="true">
-              ✓
-            </span>
-            Work marked complete · Resolved or closed
-          </span>
         </div>
       )}
       <p className="map-caption">
-        {view === 'reports' &&
-          'Active concerns are shown by default. Use Status to view completed reports. '}
-        {view === 'plan'
+        {activeView === 'reports' && 'Use Status to filter concerns by their current progress. '}
+        {activeView === 'plan'
           ? 'Explore the MSU–IIT campus plan. Select Report pins to view IIT Voice concerns.'
-          : colorBy === 'category'
-            ? 'Pin colors and numbers show the primary category. Category filters include additional categories too. Select a pin for details.'
-            : 'Pin colors and letters show priority. Select a pin for status, categories and report details.'}
+          : activeView === 'density'
+            ? 'Select a report cluster or building to explore concerns by floor.'
+            : 'Select a pin for status, priority, categories and report details.'}
       </p>
     </>
   );

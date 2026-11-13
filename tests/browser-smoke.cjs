@@ -227,7 +227,25 @@ server.main()`,
     await page.locator('.demo-accounts').waitFor();
 
     assert.equal(await page.locator('[data-demo-account]').count(), 6);
-    await page.locator('.auth-campus-photo').evaluate((image) => image.decode());
+    await page.waitForFunction(() => {
+      const video = document.querySelector('.auth-campus-video');
+      return video.readyState >= 2 && video.currentTime > 0 && !video.paused;
+    });
+    assert.ok(await page.locator('video').evaluate((video) => video.currentSrc.endsWith('.webm')));
+    assert.ok(
+      await page.evaluate(() => document.documentElement.scrollHeight <= innerHeight),
+      'Desktop sign-in card should fit without page scrolling'
+    );
+    await page.getByRole('button', { name: 'Pause video', exact: true }).click();
+    assert.ok(await page.locator('video').evaluate((video) => video.paused));
+    await page.getByRole('button', { name: 'Beside sign-in', exact: true }).click();
+    await page.waitForFunction(() => document.querySelector('video').videoHeight === 480);
+    assert.ok(await page.locator('video').evaluate((video) => video.controls));
+    await page.getByRole('button', { name: 'Background video', exact: true }).click();
+    await page.waitForFunction(() => {
+      const video = document.querySelector('video');
+      return video.videoHeight === 368 && video.duration === 60 && !video.paused;
+    });
     await page.screenshot({
       path: path.join(root, 'test-results/demo-accounts.png'),
       fullPage: true,
@@ -1896,10 +1914,13 @@ server.main()`,
       } else await mobile.locator(`.sidebar [data-page=${id}]`).click();
     }
     await mobile.goto(base);
-    await mobile.locator('.auth-campus-photo').evaluate((image) => image.decode());
+    await mobile.waitForFunction(() => document.querySelector('video').readyState >= 2);
     for (const width of [320, 390, 768]) {
       await mobile.setViewportSize({ width, height: 844 });
       await fits('Mobile sign-in');
+      await mobile.getByRole('button', { name: 'Beside sign-in', exact: true }).tap();
+      await fits('Mobile standalone video');
+      await mobile.getByRole('button', { name: 'Background video', exact: true }).tap();
       await mobile.screenshot({
         path: path.join(root, `test-results/login-${width}.png`),
         fullPage: true,

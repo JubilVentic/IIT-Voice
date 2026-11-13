@@ -566,8 +566,6 @@ function ReviewForm({ report, onSaved, onEvidence }) {
         <Field label="Decision / progress note" help="The reporter can read this note.">
           <textarea
             name="note"
-            required
-            minLength={2}
             maxLength={2000}
             placeholder="Explain the decision or action taken"
           />
@@ -586,7 +584,7 @@ function ReviewForm({ report, onSaved, onEvidence }) {
         <button
           className="btn solid"
           type="submit"
-          disabled={action.busy || (needsPhoto && !testBypass)}
+          disabled={action.busy}
         >
           Save decision
         </button>
