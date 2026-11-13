@@ -708,13 +708,15 @@ export default function App() {
         <div
           className="workspace-pending"
           role="status"
-          aria-label="Loading workspace"
           aria-busy="true"
         >
           <span className="wandering-eyes" aria-hidden="true">
-            <span />
-            <span />
+            <span className="wandering-eyes-pair">
+              <span />
+              <span />
+            </span>
           </span>
+          <p className="workspace-loading-copy">Connecting to IIT Voice…</p>
         </div>
       ) : !user ? (
         <Auth signIn={signIn} api={api} />
