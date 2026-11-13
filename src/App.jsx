@@ -712,9 +712,10 @@ export default function App() {
           aria-busy="true"
         >
           <div className="workspace-loading-content">
-            <span className="mascot-run-stage" aria-hidden="true">
+            <span className="mascot-run-stage">
               <img className="mascot-runner" src={iitMascot} alt="" />
-              <span className="mascot-run-shadow" />
+              <span className="mascot-speech">DALI GUSTO NAKO MUREKLAMO</span>
+              <span className="mascot-run-shadow" aria-hidden="true" />
             </span>
             <p className="workspace-loading-copy">Connecting to IIT Voice…</p>
           </div>

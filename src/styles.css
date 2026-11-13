@@ -119,37 +119,57 @@ small,
 }
 .mascot-run-stage {
   position: relative;
-  display: grid;
-  width: 156px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 270px;
   height: 168px;
-  place-items: start center;
 }
 .mascot-runner {
   z-index: 1;
-  width: 120px;
+  flex: 0 0 104px;
+  width: 104px;
   height: 160px;
   object-fit: contain;
   transform-origin: 50% 90%;
   filter: drop-shadow(0 5px 5px rgb(40 25 30 / 12%));
   animation: mascot-run 520ms steps(2, end) infinite;
 }
-.mascot-run-stage::before,
-.mascot-run-stage::after {
+.mascot-speech {
   position: absolute;
-  left: 4px;
-  width: 18px;
-  height: 3px;
-  border-radius: 3px;
-  background: var(--gold);
-  content: '';
-  animation: mascot-speedline 520ms ease-in-out infinite;
+  z-index: 2;
+  top: 50%;
+  left: 112px;
+  width: 150px;
+  padding: 11px 12px;
+  border: 1px solid #e7d39f;
+  border-radius: 16px;
+  background: white;
+  box-shadow: 0 4px 12px rgb(60 40 30 / 10%);
+  color: var(--maroon);
+  font-size: 12px;
+  font-weight: 750;
+  line-height: 1.35;
+  text-align: center;
+  transform: translateY(-50%);
 }
-.mascot-run-stage::before { top: 76px; left: 14px; }
-.mascot-run-stage::after { top: 100px; left: auto; right: 13px; animation-delay: 260ms; }
+.mascot-speech::before {
+  position: absolute;
+  bottom: 18px;
+  left: -7px;
+  width: 12px;
+  height: 12px;
+  border-bottom: 1px solid #e7d39f;
+  border-left: 1px solid #e7d39f;
+  background: white;
+  content: '';
+  transform: rotate(45deg);
+}
 .mascot-run-shadow {
   position: absolute;
   bottom: 4px;
-  left: 50%;
+  left: 52px;
   width: 64px;
   height: 9px;
   border-radius: 50%;
@@ -161,10 +181,6 @@ small,
   0%, 100% { transform: translate(-3px, 1px) rotate(-2deg) scaleY(0.98); }
   50% { transform: translate(3px, -7px) rotate(2deg) scaleY(1.02); }
 }
-@keyframes mascot-speedline {
-  0%, 100% { opacity: 0; transform: translateX(7px) scaleX(0.7); }
-  50% { opacity: 0.85; transform: translateX(-3px) scaleX(1); }
-}
 @keyframes mascot-shadow {
   to { opacity: 0.5; transform: translateX(-50%) scaleX(0.75); }
 }
@@ -175,8 +191,6 @@ small,
 }
 @media (prefers-reduced-motion: reduce) {
   .mascot-runner,
-  .mascot-run-stage::before,
-  .mascot-run-stage::after,
   .mascot-run-shadow {
     animation: none;
   }
