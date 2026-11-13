@@ -119,17 +119,14 @@ small,
 }
 .mascot-run-stage {
   position: relative;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  width: 270px;
-  height: 168px;
+  display: grid;
+  width: 220px;
+  height: 230px;
+  place-items: end center;
 }
 .mascot-runner {
   z-index: 1;
-  flex: 0 0 104px;
-  width: 104px;
+  width: 116px;
   height: 160px;
   object-fit: contain;
   transform-origin: 50% 90%;
@@ -139,9 +136,10 @@ small,
 .mascot-speech {
   position: absolute;
   z-index: 2;
-  top: 50%;
-  left: 112px;
-  width: 150px;
+  top: 0;
+  left: 50%;
+  width: 204px;
+  max-width: calc(100% - 8px);
   padding: 11px 12px;
   border: 1px solid #e7d39f;
   border-radius: 16px;
@@ -152,24 +150,24 @@ small,
   font-weight: 750;
   line-height: 1.35;
   text-align: center;
-  transform: translateY(-50%);
+  transform: translateX(-50%);
 }
 .mascot-speech::before {
   position: absolute;
-  bottom: 18px;
-  left: -7px;
+  bottom: -7px;
+  left: 50%;
   width: 12px;
   height: 12px;
   border-bottom: 1px solid #e7d39f;
-  border-left: 1px solid #e7d39f;
+  border-right: 1px solid #e7d39f;
   background: white;
   content: '';
-  transform: rotate(45deg);
+  transform: translateX(-50%) rotate(45deg);
 }
 .mascot-run-shadow {
   position: absolute;
   bottom: 4px;
-  left: 52px;
+  left: 50%;
   width: 64px;
   height: 9px;
   border-radius: 50%;
