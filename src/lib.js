@@ -107,6 +107,6 @@ export async function uploadEvidence(api, id, file, analysisToken = '', stage = 
 
 export function validateImage(file) {
   if (!file || !file.size) throw new Error('Choose an image.');
-  if (!['image/png', 'image/jpeg'].includes(file.type) || file.size > 2 * 1024 * 1024)
-    throw new Error('Choose a PNG or JPEG image under 2 MB.');
+  if (!['image/png', 'image/jpeg'].includes(file.type) || file.size > 5 * 1024 * 1024)
+    throw new Error('Choose a PNG or JPEG image up to 5 MB.');
 }

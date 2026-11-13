@@ -60,7 +60,7 @@ TRANSITIONS = {
     "rejected": set(),
     "duplicate": set(),
 }
-MAX_BODY = 4 * 1024 * 1024
+MAX_BODY = 8 * 1024 * 1024
 SECURE = os.environ.get("IIT_VOICE_SECURE_COOKIE") == "1" or os.environ.get("VERCEL") == "1"
 DEMO_LOGIN = os.environ.get("IIT_VOICE_DEMO_LOGIN") == "1"
 
@@ -1337,7 +1337,7 @@ class Handler(BaseHTTPRequestHandler):
                     content = base64.b64decode(b.get("data", ""), validate=True)
                 except (ValueError, TypeError):
                     raise APIError(400, "Invalid image data.")
-                check(0 < len(content) <= 2 * 1024 * 1024, "Image must be under 2 MB.")
+                check(0 < len(content) <= 5 * 1024 * 1024, "Image must be up to 5 MB.")
                 mime = (
                     "image/png"
                     if content.startswith(b"\x89PNG\r\n\x1a\n")

@@ -119,7 +119,7 @@ export function PhotoAssist({
       </p>
       <Field
         label={label}
-        help="PNG or JPEG, up to 2 MB. Evidence stays restricted to you, administrators and the assigned office."
+        help="PNG or JPEG, up to 5 MB. Evidence stays restricted to you, administrators and the assigned office."
       >
         <input
           ref={input}

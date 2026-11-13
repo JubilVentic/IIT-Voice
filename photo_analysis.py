@@ -52,8 +52,8 @@ def photo_gps(exif):
 def prepare_photo(encoded):
     try:
         content = base64.b64decode(encoded, validate=True)
-        if not 0 < len(content) <= 2 * 1024 * 1024:
-            raise ValueError("Choose a PNG or JPEG photo under 2 MB.")
+        if not 0 < len(content) <= 5 * 1024 * 1024:
+            raise ValueError("Choose a PNG or JPEG photo up to 5 MB.")
         with Image.open(io.BytesIO(content)) as image:
             if image.format not in ("PNG", "JPEG") or image.width * image.height > 20_000_000:
                 raise ValueError("Choose a PNG or JPEG photo under 20 megapixels.")

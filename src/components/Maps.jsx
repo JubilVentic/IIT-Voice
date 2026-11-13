@@ -160,10 +160,11 @@ export function ReportMap({
       L.DomEvent.disableClickPropagation(button);
       L.DomEvent.disableScrollPropagation(button);
       button.addEventListener('click', () => {
-        requestAnimationFrame(() => {
-          map.invalidateSize({ pan: false, animate: false });
-          map.fitBounds(campusBounds, { padding: [16, 16], maxZoom: 2.5, animate: false });
-        });
+        map.stop();
+        requestAnimationFrame(() => requestAnimationFrame(() => {
+          map.invalidateSize({ animate: false });
+          map.fitBounds(campusBounds, { padding: [20, 20], maxZoom: 2.5, animate: false });
+        }));
       });
       return button;
     };

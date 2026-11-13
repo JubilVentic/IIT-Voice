@@ -175,7 +175,7 @@ npm start
 
 Get a key in [Google AI Studio](https://aistudio.google.com/apikey). Check your Gemini project quota and billing before enabling analysis. Requests are limited to 20 analysis attempts per signed-in account per hour. The default model is [Gemini 3.5 Flash-Lite](https://ai.google.dev/gemini-api/docs/models/gemini-3.5-flash-lite); the integration uses [GenerateContent](https://ai.google.dev/api/generate-content) with image input and a category JSON schema. Without a configured key, photo GPS still works, and evidence is marked **Unverified** for manual review.
 
-Tests use generated images and mocked AI responses; a real Gemini response requires your server API key. Photos must be PNG/JPEG under 2 MB and 20 megapixels for analysis.
+Tests use generated images and mocked AI responses; a real Gemini response requires your server API key. Photos must be PNG/JPEG up to 5 MB and 20 megapixels for analysis.
 
 AI photo analysis now also suggests an editable report title. Filename, AI title/category/explanation, model and analysis time, EXIF GPS, and the report pin at upload are saved with each attachment and shown only to the reporter and admins. AI results are bound to the signed-in user and exact image bytes by a server-issued token, so changing a photo cannot reuse another photo’s analysis. Unsaved analysis tokens expire after 24 hours; submitted attachment metadata remains with the report. Metadata is saved alongside the original image; the image pixels are not altered or stamped.
 

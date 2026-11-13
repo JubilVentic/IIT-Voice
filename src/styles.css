@@ -1156,7 +1156,7 @@ table .btn {
 }
 
 .auth-video-background .auth-story .brand {
-  color: white;
+  color: #4a1024;
 }
 
 .auth-video-background .auth-campus-video {
@@ -3805,3 +3805,9 @@ input[type='file'] {
 .voices-comment { display: flex; gap: 8px; margin-top: 12px; }
 .voices-reply { margin: 10px 0 0 12px; padding-left: 12px; border-left: 2px solid #eee; }
 @media (max-width: 600px) { .voices-foot, .voices-comment { align-items: stretch; flex-direction: column; } .service-map { height: 250px; } .service-map-pin { font-size: 9px; padding: 4px 6px; } .service-ratings button { flex: 1 1 28%; } }
+
+@media (max-width: 760px) {
+  .map.large {
+    height: clamp(240px, 70vw, 320px);
+  }
+}
