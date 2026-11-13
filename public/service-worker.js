@@ -1,10 +1,11 @@
-const CACHE = 'iit-voice-shell-v1';
+const CACHE = 'iit-voice-shell-v2';
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
     caches.open(CACHE).then((cache) => cache.addAll([
       '/',
       '/manifest.json',
+      '/favicon.png',
       '/pwa-icon-192.png',
       '/pwa-icon-512.png',
       '/apple-touch-icon.png',

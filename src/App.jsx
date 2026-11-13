@@ -711,7 +711,10 @@ export default function App() {
           aria-label="Loading workspace"
           aria-busy="true"
         >
-          <span className="workspace-spinner" aria-hidden="true" />
+          <span className="wandering-eyes" aria-hidden="true">
+            <span />
+            <span />
+          </span>
         </div>
       ) : !user ? (
         <Auth signIn={signIn} api={api} />

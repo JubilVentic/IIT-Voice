@@ -110,21 +110,53 @@ small,
   place-items: center;
   min-height: 100dvh;
 }
-.workspace-spinner {
-  width: 28px;
-  height: 28px;
-  border: 3px solid var(--line);
-  border-top-color: var(--maroon);
-  border-radius: 50%;
-  animation: workspace-spin 0.8s linear infinite;
+.wandering-eyes {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 108px;
+  height: 48px;
+  color: var(--maroon);
 }
-@keyframes workspace-spin {
-  to {
-    transform: rotate(360deg);
-  }
+.wandering-eyes > span {
+  position: relative;
+  width: 49px;
+  height: 49px;
+  overflow: hidden;
+  border-radius: 50%;
+  background: #ead9ad;
+  animation: wandering-blink 4s infinite;
+}
+.wandering-eyes > span::before {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 23px;
+  height: 23px;
+  border-radius: 50%;
+  background: var(--maroon);
+  content: '';
+  animation: wandering-look 4s ease-in-out infinite;
+}
+.wandering-eyes > span:nth-child(2),
+.wandering-eyes > span:nth-child(2)::before {
+  animation-delay: 80ms;
+}
+@keyframes wandering-look {
+  0%, 100% { transform: translate(-50%, -50%); }
+  18% { transform: translate(-95%, -50%); }
+  38% { transform: translate(-8%, -68%); }
+  62% { transform: translate(-8%, -36%); }
+  82% { transform: translate(-50%, -50%); }
+}
+@keyframes wandering-blink {
+  0%, 55%, 100% { transform: scaleY(1); }
+  58%, 61% { transform: scaleY(0.08); }
 }
 @media (prefers-reduced-motion: reduce) {
-  .workspace-spinner {
+  .wandering-eyes > span,
+  .wandering-eyes > span::before {
     animation: none;
   }
 }
@@ -219,6 +251,7 @@ small,
 
 .brand span {
   font-weight: 400;
+  color: var(--gold);
 }
 
 .brand small {
