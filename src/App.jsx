@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import campusVideo from './assets/campus-video.mp4';
 import campusVideoWebm from './assets/campus-video.webm';
 import campusPoster from './assets/campus-video-poster.jpg';
+import iitMascot from './assets/iit-mascot-loading.png';
 import systemQr from './assets/iit-voice-qr.svg';
 import systemQrPng from './assets/iit-voice-qr.png';
 import { VoiceContext, labels, useAction, useVoice, formValues } from './lib.js';
@@ -711,11 +712,9 @@ export default function App() {
           aria-busy="true"
         >
           <div className="workspace-loading-content">
-            <span className="wandering-eyes" aria-hidden="true">
-              <span className="wandering-eyes-pair">
-                <span />
-                <span />
-              </span>
+            <span className="mascot-run-stage" aria-hidden="true">
+              <img className="mascot-runner" src={iitMascot} alt="" />
+              <span className="mascot-run-shadow" />
             </span>
             <p className="workspace-loading-copy">Connecting to IIT Voice…</p>
           </div>
